@@ -4,7 +4,7 @@ An [Omarchy](https://omarchy.org) 4 (Quattro) bar widget that replaces the
 workspace numbers. Hover a number to get a live, to-scale picture of that
 workspace without switching to it.
 
-<!-- Add a screenshot of the hover card as preview.png in the repository root. -->
+<p align="center"><img src="preview.png" alt="Hoverview's hover card for workspace 3: a to-scale live preview of its two windows and the window list, with the last-used window highlighted" width="586"></p>
 
 ## What it does
 
@@ -20,7 +20,8 @@ workspace without switching to it.
   to a limit you can set. Click a tile or a row to jump straight to that
   window.
 - **Full-screen peek.** Rest the pointer on the mini screen to briefly switch
-  to that workspace. Move away and you're back where you were; click to stay.
+  to that workspace (when it's on the monitor you're using). Move away and
+  you're back where you were; click to stay.
 - **Multi-monitor.** Workspaces on a secondary monitor are drawn in your
   theme's magenta, or a color you pick, so you can tell screens apart at a
   glance.
