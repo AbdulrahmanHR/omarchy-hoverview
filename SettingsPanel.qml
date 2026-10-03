@@ -1,5 +1,5 @@
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls as QQC
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -25,6 +25,8 @@ Panel {
   property var pending: ({})
   property bool inBar: true
   property bool readQueued: false
+  // Bumped per write; a read that began before a write is stale
+  property int writeGen: 0
   property string errorText: ""
   property string themeText: ""
 
@@ -143,6 +145,10 @@ Panel {
     } catch (e) {
       return
     }
+    if (readProc.writeGen !== root.writeGen) {
+      root.readQueued = true
+      return
+    }
     var entry = root.findEntry(config)
     root.inBar = entry !== null
     var next = root.normalize(entry)
@@ -157,11 +163,13 @@ Panel {
       return
     }
     root.readQueued = false
+    readProc.writeGen = root.writeGen
     readProc.running = true
   }
 
   Process {
     id: readProc
+    property int writeGen: 0
     command: ["omarchy-shell", "shell", "listShellConfig"]
     stdout: StdioCollector {
       id: readOut
@@ -216,6 +224,7 @@ Panel {
     writeProc.key = key
     writeProc.value = value
     writeProc.command = ["omarchy", "bar", "set", root.pluginId, key, JSON.stringify(value), "--json"]
+    root.writeGen++
     writeProc.running = true
   }
 
@@ -499,7 +508,7 @@ Panel {
         boundsBehavior: Flickable.StopAtBounds
         flickableDirection: Flickable.VerticalFlick
         interactive: contentHeight > height
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        QQC.ScrollBar.vertical: QQC.ScrollBar { policy: QQC.ScrollBar.AsNeeded }
 
         Column {
           id: column
