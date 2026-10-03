@@ -49,6 +49,18 @@ omarchy plugin enable io.github.abdulrahmanhr.hoverview
 
 ## Settings
 
+### Settings panel
+
+Right-click any workspace number to open the settings panel. It writes to
+the same `shell.json` entry described below, so changes apply right away
+and show up in the file and the CLI too.
+
+If you put the settings button somewhere else, another bar widget can embed
+`SettingsPanel.qml`: load it, set its `bar` and `anchorItem` properties, and
+call `open()`, `close()` or `toggle()` (it also exposes `opened`).
+
+### shell.json and the CLI
+
 Settings are extra keys on the widget's entry in `bar.layout` of
 `~/.config/omarchy/shell.json`. The shell reloads the file on save and the
 widget applies the change right away. No restart needed.
@@ -100,8 +112,9 @@ outside the range are clamped, and invalid values fall back to the default.
 
 There are no other dependencies. The widget reads window data with
 `hyprctl -j clients` when you hover, and reads theme colors from
-`~/.local/state/omarchy/current/theme/colors.toml`. It never changes your
-configuration.
+`~/.local/state/omarchy/current/theme/colors.toml`. The only configuration
+it changes is its own `shell.json` entry, through `omarchy bar set`, when you
+use the settings panel.
 
 ## Remove
 

@@ -19,6 +19,11 @@ BarWidget {
 
   property int wsRevision: 0
 
+  // Settings card anchor. Buttons are rebuilt when the shown set changes, so
+  // the new button for the same workspace id takes it over.
+  property int settingsWorkspaceId: -1
+  property Item settingsAnchorButton: null
+
   // Live `hyprctl clients` data keyed by address. Quickshell's
   // toplevel.lastIpcObject is a snapshot that is not updated after the shell
   // starts, so group membership, the shown tab and geometry are read from here.
@@ -370,7 +375,7 @@ BarWidget {
     property int targetWsId: -1
 
     onTriggered: {
-      if (root.previewEnabled && targetWsId !== -1 && targetButton) {
+      if (root.previewEnabled && !settingsPanel.opened && targetWsId !== -1 && targetButton) {
         root.activeAnchorItem = targetButton
         root.hoveredWorkspaceId = targetWsId
         previewPopup.open = true
@@ -428,7 +433,7 @@ BarWidget {
 
   function handleButtonHovered(btn, wsId) {
     root.isHoveringButton = true
-    if (!root.previewEnabled) return
+    if (!root.previewEnabled || settingsPanel.opened) return
     closeTimer.stop()
     if (root.isPeeking) {
       if (root.originalWorkspaceId !== -1) {
@@ -456,6 +461,18 @@ BarWidget {
     root.isHoveringButton = false
     openTimer.stop()
     closeTimer.restart()
+  }
+
+  // Right-click on a number; the same number closes the card again
+  function toggleSettings(btn, wsId) {
+    if (settingsPanel.opened && root.settingsWorkspaceId === wsId) {
+      settingsPanel.close()
+      return
+    }
+    root.close()
+    root.settingsWorkspaceId = wsId
+    root.settingsAnchorButton = btn
+    settingsPanel.open()
   }
 
   // Active workspace state and calculations for preview
@@ -586,6 +603,7 @@ BarWidget {
               })
             }
           }
+          if (btn.modelData === root.settingsWorkspaceId) root.settingsAnchorButton = btn
         }
 
         Rectangle {
@@ -598,8 +616,9 @@ BarWidget {
           visible: btn.focused
         }
 
-        onPressed: function() {
-          root.commitAndFocusWorkspace(modelData)
+        onPressed: function(button) {
+          if (button === Qt.RightButton) root.toggleSettings(btn, btn.modelData)
+          else root.commitAndFocusWorkspace(modelData)
         }
 
         HoverHandler {
@@ -642,6 +661,12 @@ BarWidget {
         }
       }
     }
+  }
+
+  SettingsPanel {
+    id: settingsPanel
+    bar: root.bar
+    anchorItem: root.settingsAnchorButton || root
   }
 
   // Hover preview popup card
