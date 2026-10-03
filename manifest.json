@@ -1,0 +1,153 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.abdulrahmanhr.hoverview",
+  "name": "Hoverview",
+  "version": "1.0.0",
+  "author": "Abdulrahman Rahmouni",
+  "license": "MIT",
+  "description": "Workspace numbers that show a live, to-scale layout of each workspace on hover, with the shown tab of every group, a window list, and full-screen peek.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Hoverview",
+    "description": "Workspace number indicators with a live hover preview of each workspace's windows.",
+    "category": "Compositor",
+    "aliases": [
+      "workspaces",
+      "preview",
+      "peek"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "center",
+    "defaults": {
+      "persistentWorkspaces": 0,
+      "labelVerticalOffset": 0,
+      "colorSecondaryMonitor": true,
+      "secondaryMonitorColor": "",
+      "preview": true,
+      "hoverDelayMs": 220,
+      "previewWidth": 420,
+      "livePreview": true,
+      "showWindowList": true,
+      "maxListedWindows": 6,
+      "highlightLastFocused": true,
+      "peekOnHover": true,
+      "peekDelayMs": 180
+    },
+    "schema": [
+      {
+        "key": "persistentWorkspaces",
+        "type": "integer",
+        "label": "Persistent workspaces",
+        "min": 0,
+        "max": 10,
+        "step": 1,
+        "defaultValue": 0,
+        "description": "Always show workspaces 1 to N, even when empty. 0 shows only occupied workspaces plus the focused one."
+      },
+      {
+        "key": "labelVerticalOffset",
+        "type": "number",
+        "label": "Label vertical offset",
+        "min": -10,
+        "max": 10,
+        "step": 0.5,
+        "defaultValue": 0,
+        "description": "Nudge the workspace numbers up (negative) or down (positive) for fonts that sit off-center."
+      },
+      {
+        "key": "colorSecondaryMonitor",
+        "type": "boolean",
+        "label": "Color other monitors",
+        "defaultValue": true,
+        "description": "Tint workspaces that live on a non-primary monitor."
+      },
+      {
+        "key": "secondaryMonitorColor",
+        "type": "string",
+        "label": "Other monitor color",
+        "defaultValue": "",
+        "description": "Hex color (#RRGGBB or #AARRGGBB) for workspaces on other monitors. Leave empty to derive it from the theme (magenta)."
+      },
+      {
+        "key": "preview",
+        "type": "boolean",
+        "label": "Hover preview",
+        "defaultValue": true,
+        "description": "Show the preview card when hovering a workspace number. When off, numbers only switch workspaces on click."
+      },
+      {
+        "key": "hoverDelayMs",
+        "type": "integer",
+        "label": "Hover delay (ms)",
+        "min": 0,
+        "max": 2000,
+        "step": 10,
+        "defaultValue": 220,
+        "description": "How long to hover a number before the preview opens."
+      },
+      {
+        "key": "previewWidth",
+        "type": "integer",
+        "label": "Preview width (px)",
+        "min": 240,
+        "max": 800,
+        "step": 10,
+        "defaultValue": 420,
+        "description": "Width of the mini screen preview; its height follows the monitor aspect ratio."
+      },
+      {
+        "key": "livePreview",
+        "type": "boolean",
+        "label": "Live window capture",
+        "defaultValue": true,
+        "description": "Show live screen captures in the preview. When off, windows are drawn as tiles with their app icon and name."
+      },
+      {
+        "key": "showWindowList",
+        "type": "boolean",
+        "label": "Window list",
+        "defaultValue": true,
+        "description": "Show the list of windows under the preview."
+      },
+      {
+        "key": "maxListedWindows",
+        "type": "integer",
+        "label": "Listed windows",
+        "min": 1,
+        "max": 20,
+        "step": 1,
+        "defaultValue": 6,
+        "description": "Maximum number of windows shown in the list before it summarizes the rest."
+      },
+      {
+        "key": "highlightLastFocused",
+        "type": "boolean",
+        "label": "Highlight last focused window",
+        "defaultValue": true,
+        "description": "Highlight the most recently focused window of each workspace. When off, only the currently focused window is highlighted."
+      },
+      {
+        "key": "peekOnHover",
+        "type": "boolean",
+        "label": "Peek on hover",
+        "defaultValue": true,
+        "description": "Switch to the workspace while the cursor rests on the preview, and switch back when it leaves. Clicking still switches."
+      },
+      {
+        "key": "peekDelayMs",
+        "type": "integer",
+        "label": "Peek delay (ms)",
+        "min": 0,
+        "max": 2000,
+        "step": 10,
+        "defaultValue": 180,
+        "description": "How long the cursor must rest on the preview before peeking."
+      }
+    ]
+  }
+}
