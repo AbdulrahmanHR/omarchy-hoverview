@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.abdulrahmanhr.hoverview",
   "name": "Hoverview",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Abdulrahman Rahmouni",
   "license": "MIT",
   "description": "Workspace numbers that show a live, to-scale layout of each workspace on hover, with the shown tab of every group, a window list, and full-screen peek.",
