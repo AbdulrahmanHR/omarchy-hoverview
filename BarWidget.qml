@@ -699,6 +699,7 @@ BarWidget {
         }
 
         Text {
+          textFormat: Text.PlainText
           visible: root.activeMonitor !== null
           text: "• " + (root.activeMonitor ? root.activeMonitor.name : "")
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -861,6 +862,7 @@ BarWidget {
                   }
 
                   Text {
+                    textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width - Style.space(16)
                     text: modelData.title || ipc.class || ""
@@ -894,6 +896,7 @@ BarWidget {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   anchors.horizontalCenter: parent.horizontalCenter
                   text: ipc.class ? (ipc.class.charAt(0).toUpperCase() + ipc.class.slice(1)) : ""
                   color: Color.popups.text
@@ -1020,6 +1023,7 @@ BarWidget {
                 spacing: 1
 
                 Text {
+                  textFormat: Text.PlainText
                   width: parent.width
                   text: winTitle
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -1030,6 +1034,7 @@ BarWidget {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   width: parent.width
                   text: appClass ? (appClass.charAt(0).toUpperCase() + appClass.slice(1)) : "Application"
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
