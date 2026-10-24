@@ -125,6 +125,22 @@ BarWidget {
     else clientsProc.running = true
   }
 
+  // Workspace ids that hold at least one window, from live `hyprctl clients`
+  readonly property var liveOccupiedIds: {
+    var ids = {}
+    for (var addr in root.clientsByAddr) {
+      var c = root.clientsByAddr[addr]
+      if (c && c.workspace && c.workspace.id > 0) ids[c.workspace.id] = true
+    }
+    return ids
+  }
+
+  function isOccupied(id) {
+    if (root.liveOccupiedIds[id]) return true
+    var ws = root.workspaceById(id)
+    return !!(ws && ws.toplevels && ws.toplevels.values && ws.toplevels.values.length > 0)
+  }
+
   function ipcFor(toplevel) {
     if (!toplevel) return {}
     return root.clientsByAddr[root.formatAddress(toplevel)] || toplevel.lastIpcObject || {}
@@ -145,7 +161,9 @@ BarWidget {
     target: Hyprland
     function onRawEvent(event) {
       root.wsRevision++
-      if (previewPopup.open && event && root.clientEvents.indexOf(event.name) !== -1) {
+      // Always refresh: occupancy is read from the live client list, since
+      // workspace.toplevels can miss windows (e.g. after a shell restart)
+      if (event && root.clientEvents.indexOf(event.name) !== -1) {
         root.refreshClients()
       }
     }
@@ -163,12 +181,18 @@ BarWidget {
       if (!ws) continue
       var id = ws.id
       if (id > 0 && id <= 10) {
-        var hasWindows = ws.toplevels && ws.toplevels.values && ws.toplevels.values.length > 0
+        var hasWindows = root.isOccupied(id)
         var isFocused = (id === focusedId)
         if (hasWindows || isFocused) {
           if (ids.indexOf(id) === -1) ids.push(id)
         }
       }
+    }
+
+    // Hyprland.workspaces can also miss a workspace, so add live ones directly
+    for (var liveId in root.liveOccupiedIds) {
+      var lid = Number(liveId)
+      if (lid > 0 && lid <= 10 && ids.indexOf(lid) === -1) ids.push(lid)
     }
 
     if (focusedId > 0 && focusedId <= 10 && ids.indexOf(focusedId) === -1) {
@@ -577,7 +601,7 @@ BarWidget {
         required property int modelData
 
         readonly property var workspace: root.workspaceById(modelData)
-        readonly property bool occupied: workspace !== null && workspace.toplevels.values.length > 0
+        readonly property bool occupied: root.isOccupied(modelData)
         readonly property bool focused: Hyprland.focusedWorkspace !== null && Hyprland.focusedWorkspace.id === modelData
         readonly property bool isSecondScreen: root.colorSecondaryMonitor && root.isSecondScreenWorkspace(workspace)
 
