@@ -1,6 +1,6 @@
 # Hoverview for Omarchy
 
-An [Omarchy](https://omarchy.org) 4 (Quattro) bar widget that replaces the
+An [Omarchy](https://omarchy.org) 4.5 bar widget that replaces the
 workspace numbers. Hover a number to get a live, to-scale picture of that
 workspace without switching to it.
 
@@ -8,9 +8,20 @@ workspace without switching to it.
 
 ## What it does
 
-- **Only workspaces that matter.** Shows workspaces 1–10 that have windows,
-  plus the one you're on. You can also keep 1 to N always visible. The
-  focused workspace gets an accent pill.
+- **Per-monitor workspaces.** Follows Omarchy 4.5's per-monitor workspaces:
+  each monitor's bar shows its own 1–10 (Hyprland numbers them in blocks of
+  ten per monitor: 1–10, 11–20, …), plus workspaces visiting from an
+  unplugged monitor after a gap. Shows the occupied ones plus the shown one,
+  and optionally 1 to N always. The shown workspace gets an accent pill,
+  solid on the screen that has focus and faded on the others, so you can
+  see which screen Super + number will act on.
+- **Layout shapes.** The active workspace's number sits on its layout
+  shape: a square (tiling), circle (scrolling) or triangle (floating).
+  Optionally every workspace's number sits on a faint shape of its own.
+  Click the active one to cycle the layout like Super + L; the hover card
+  names the layout.
+- **Scroll to switch.** The mouse wheel or touchpad scrolls through
+  workspaces without wrapping.
 - **Live hover preview.** Each window is drawn where it really sits on the
   monitor, with a live capture of its contents, its icon and its title.
   Turn captures off and it draws icons and names instead.
@@ -22,9 +33,9 @@ workspace without switching to it.
 - **Full-screen peek.** Rest the pointer on the mini screen to briefly switch
   to that workspace (when it's on the monitor you're using). Move away and
   you're back where you were; click to stay.
-- **Multi-monitor.** Workspaces on a secondary monitor are drawn in your
-  theme's magenta, or a color you pick, so you can tell screens apart at a
-  glance.
+- **Multi-monitor.** On a secondary monitor's bar the shown workspace is
+  marked in your theme's magenta, or a color you pick, instead of the
+  accent, so you can tell screens apart at a glance.
 
 Each of these can be tuned or turned off. See [Settings](#settings).
 
@@ -38,9 +49,22 @@ Omarchy asks before cloning, then asks where on the bar the widget goes (the
 center by default). Plugins run as unsandboxed code inside the Omarchy shell,
 so read the code before you enable it.
 
-The widget replaces Omarchy's workspace numbers, so take the built-in ones
-off the bar: remove the `omarchy.workspaces` entry from `bar.layout` in
-`~/.config/omarchy/shell.json` (the shell reloads it on save).
+The widget replaces Omarchy's workspace numbers. While those are still on
+the bar, right-click any Hoverview number and press **Replace them** at the
+top of the settings panel: Hoverview takes their place and they come off
+the bar. To do it by hand, remove the `omarchy.workspaces` entry from
+`bar.layout` in `~/.config/omarchy/shell.json` (the shell reloads it on save).
+
+### Updating
+
+```bash
+omarchy plugin update io.github.abdulrahmanhr.hoverview
+omarchy restart shell
+```
+
+The shell reloads a changed plugin on its own, but it can keep pieces of the
+old version in memory, and then the widget fails to load or runs old code.
+Restarting the shell after an update clears that.
 
 If you added the plugin without enabling it:
 
@@ -91,9 +115,12 @@ outside the range are clamped, and invalid values fall back to the default.
 
 | Setting | Default | What it does |
 |---|---|---|
-| `persistentWorkspaces` | `0` | Always show workspaces 1 to N, even when empty. `0` shows only workspaces with windows plus the one you're on. Whole number, 0–10. |
-| `labelVerticalOffset` | `0` | Nudges the workspace numbers up (negative) or down (positive) for fonts that sit off-center. -10 to 10, in steps of 0.5. |
-| `colorSecondaryMonitor` | `true` | Tint workspaces that live on a secondary monitor (Hyprland monitor id above 0). |
+| `persistentWorkspaces` | `0` | Always show this monitor's workspaces 1 to N, even when empty. `0` shows only workspaces with windows plus the one you're on. Whole number, 0–10. |
+| `labelVerticalOffset` | `0` | Nudges the workspace labels up (negative) or down (positive) for fonts that sit off-center. -10 to 10, in steps of 0.5. |
+| `showLayoutShape` | `true` | Draw the active workspace's number on its layout shape (square tiling, circle scrolling, triangle floating) instead of the plain accent pill. |
+| `alwaysShowLayoutShapes` | `false` | Draw every workspace's number on a faint layout shape, not only the active one. |
+| `cycleLayoutOnClick` | `true` | Click the already-active workspace to cycle its layout (tiling, scrolling, floating), like Super + L. |
+| `colorSecondaryMonitor` | `true` | Mark the shown workspace on a secondary monitor's bar (Hyprland monitor id above 0) in the color below instead of the accent. |
 | `secondaryMonitorColor` | `""` | Hex color for that tint, `#RRGGBB` or `#AARRGGBB`. Empty uses your theme's magenta (then purple, orange, yellow). |
 | `preview` | `true` | Show the hover card. Off turns the widget into plain workspace numbers. |
 | `hoverDelayMs` | `220` | How long to hover before the card opens. Milliseconds, 0–2000. |
@@ -107,13 +134,16 @@ outside the range are clamped, and invalid values fall back to the default.
 
 ## Requirements
 
-- Omarchy 4 with the Quickshell-based `omarchy-shell`
+- Omarchy 4.5 or newer (per-monitor workspaces,
+  `omarchy-hyprland-workspace-layout-current` / `-toggle`)
 - Hyprland 0.56 or newer (uses the Lua dispatcher syntax and the `visible`
   field of `hyprctl clients` to find the shown tab of a group)
 
 There are no other dependencies. The widget reads window data with
 `hyprctl -j clients` when you hover, and reads theme colors from
-`~/.local/state/omarchy/current/theme/colors.toml`. The only configuration
+`~/.local/state/omarchy/current/theme/colors.toml`. It also reads
+`~/.local/state/omarchy/monitor-workspaces` (monitor to block) and runs
+`omarchy-hyprland-workspace-layout-current` for each shown workspace. The only configuration
 it changes is its own `shell.json` entry, through `omarchy bar set`, when you
 use the settings panel.
 

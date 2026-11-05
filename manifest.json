@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "io.github.abdulrahmanhr.hoverview",
   "name": "Hoverview",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "author": "Abdulrahman Rahmouni",
   "license": "MIT",
-  "description": "Workspace numbers that show a live, to-scale layout of each workspace on hover, with the shown tab of every group, a window list, and full-screen peek.",
+  "description": "Per-monitor workspace numbers with layout shapes that show a live, to-scale layout of each workspace on hover, with the shown tab of every group, a window list, and full-screen peek.",
   "kinds": [
     "bar-widget"
   ],
@@ -26,6 +26,9 @@
     "defaults": {
       "persistentWorkspaces": 0,
       "labelVerticalOffset": 0,
+      "showLayoutShape": true,
+      "alwaysShowLayoutShapes": false,
+      "cycleLayoutOnClick": true,
       "colorSecondaryMonitor": true,
       "secondaryMonitorColor": "",
       "preview": true,
@@ -47,7 +50,7 @@
         "max": 10,
         "step": 1,
         "defaultValue": 0,
-        "description": "Always show workspaces 1 to N, even when empty. 0 shows only occupied workspaces plus the focused one."
+        "description": "Always show this monitor's workspaces 1 to N, even when empty. 0 shows only occupied workspaces plus the shown one."
       },
       {
         "key": "labelVerticalOffset",
@@ -60,11 +63,32 @@
         "description": "Nudge the workspace numbers up (negative) or down (positive) for fonts that sit off-center."
       },
       {
+        "key": "showLayoutShape",
+        "type": "boolean",
+        "label": "Layout shape",
+        "defaultValue": true,
+        "description": "Draw the active workspace's number on its layout shape (square tiling, circle scrolling, triangle floating) instead of the plain accent pill."
+      },
+      {
+        "key": "alwaysShowLayoutShapes",
+        "type": "boolean",
+        "label": "Layout shape on every workspace",
+        "defaultValue": false,
+        "description": "Draw every workspace's number on a faint layout shape, not only the active one."
+      },
+      {
+        "key": "cycleLayoutOnClick",
+        "type": "boolean",
+        "label": "Click to cycle layout",
+        "defaultValue": true,
+        "description": "Clicking the already-active workspace cycles its layout (tiling, scrolling, floating), like Super + L."
+      },
+      {
         "key": "colorSecondaryMonitor",
         "type": "boolean",
         "label": "Color other monitors",
         "defaultValue": true,
-        "description": "Tint workspaces that live on a non-primary monitor."
+        "description": "Mark the shown workspace on a non-primary monitor's bar in this color instead of the accent."
       },
       {
         "key": "secondaryMonitorColor",

@@ -86,9 +86,300 @@ BarWidget {
   readonly property bool highlightLastFocused: root.settingBool("highlightLastFocused", true)
   readonly property bool peekOnHover: root.settingBool("peekOnHover", true)
   readonly property int peekDelayMs: root.settingInt("peekDelayMs", 180, 0, 2000)
+  readonly property bool showLayoutShape: root.settingBool("showLayoutShape", true)
+  readonly property bool alwaysShowLayoutShapes: root.settingBool("alwaysShowLayoutShapes", false)
+  readonly property bool cycleLayoutOnClick: root.settingBool("cycleLayoutOnClick", true)
 
   onPreviewEnabledChanged: {
     if (!root.previewEnabled) root.close()
+  }
+  onAlwaysShowLayoutShapesChanged: root.queueModeReads()
+  onShowLayoutShapeChanged: root.queueModeReads()
+
+  // ------------------------------------------------- per-monitor workspaces
+
+  // Omarchy 4.5 gives every monitor workspaces 1-10 of its own, which Hyprland
+  // numbers in a block of ten per monitor: 1-10, 11-20, and so on (see
+  // default/hypr/monitor-workspaces.lua). Each bar shows its own monitor's
+  // block, labelled 1-10, and any workspace visiting from another block.
+  readonly property int slots: 10
+  readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")
+
+  readonly property var monitor: {
+    var window = root.QsWindow.window
+    var screen = window ? window.screen : null
+    return screen ? Hyprland.monitorFor(screen) : Hyprland.focusedMonitor
+  }
+  readonly property string monitorName: root.monitor ? root.monitor.name : ""
+
+  // Connector -> block, from the file Hyprland keeps them in
+  property var blocks: ({})
+
+  function readBlocks(text) {
+    var next = {}
+    var lines = String(text || "").split("\n")
+    for (var i = 0; i < lines.length; i++) {
+      var fields = lines[i].split("\t")
+      if (fields.length >= 3 && fields[1] !== "") next[fields[1]] = parseInt(fields[0], 10)
+    }
+    root.blocks = next
+  }
+
+  FileView {
+    path: root.stateHome + "/omarchy/monitor-workspaces"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.readBlocks(text())
+    onLoadFailed: root.readBlocks("")
+  }
+
+  function blockOf(id) {
+    return Math.floor((id - 1) / root.slots)
+  }
+
+  function slotOf(id) {
+    return (id - 1) % root.slots + 1
+  }
+
+  function slotLabel(id) {
+    var slot = root.slotOf(id)
+    return slot === root.slots ? "0" : String(slot)
+  }
+
+  function activeWorkspaceId() {
+    return root.monitor && root.monitor.activeWorkspace ? root.monitor.activeWorkspace.id : -1
+  }
+
+  // Until Hyprland has written the file, the workspace a monitor shows is in
+  // its own block.
+  readonly property int block: {
+    var b = root.blocks[root.monitorName]
+    if (b !== undefined && !isNaN(b)) return b
+    var active = root.activeWorkspaceId()
+    return active > 0 ? root.blockOf(active) : 0
+  }
+
+  // A peek moves the monitor to the hovered workspace for a moment, so the
+  // workspace the user is really on is the one the peek started from, and,
+  // while the switch back is still in flight, the one it is returning to.
+  // Bar state (the pill, the shape, click-to-cycle) follows this, so a click
+  // on a peeked workspace commits to it instead of cycling its layout.
+  property int revertTargetId: -1
+
+  readonly property int shownWorkspaceId: {
+    if (root.isPeeking && root.originalWorkspaceId > 0) return root.originalWorkspaceId
+    if (root.revertTargetId > 0) return root.revertTargetId
+    return root.activeWorkspaceId()
+  }
+
+  Timer {
+    id: revertTimer
+    interval: 800
+    repeat: false
+    onTriggered: root.revertTargetId = -1
+  }
+
+  // Ends a peek by going back where it started
+  function revertPeek() {
+    var original = root.originalWorkspaceId
+    root.isPeeking = false
+    root.originalWorkspaceId = -1
+    if (original > 0) {
+      root.revertTargetId = original
+      revertTimer.restart()
+      root.focusWorkspace(original)
+    }
+  }
+
+  // Ends a peek by staying on the peeked workspace (or moving on from it)
+  function dropPeek() {
+    peekTimer.stop()
+    unpeekTimer.stop()
+    root.isPeeking = false
+    root.originalWorkspaceId = -1
+    root.revertTargetId = -1
+    revertTimer.stop()
+  }
+
+  Connections {
+    target: root.monitor
+    function onActiveWorkspaceChanged() {
+      if (root.revertTargetId > 0 && root.activeWorkspaceId() === root.revertTargetId) {
+        root.revertTargetId = -1
+        revertTimer.stop()
+      }
+      root.queueModeReads()
+    }
+  }
+
+  onMonitorChanged: root.queueModeReads()
+  onBlockChanged: root.queueModeReads()
+
+  // ------------------------------------------------------- layout shapes
+
+  // Each workspace has a layout: a square tiles, a circle scrolls, and a
+  // triangle floats. A layout only changes through the layout commands, which
+  // ask for a refresh, or a config reload, so each workspace's mode is read
+  // once and cached rather than running the script on every switch.
+  property var modeCache: ({})
+  // modeCache is mutated in place, so bindings depend on this instead
+  property int modeRevision: 0
+  property int modeGeneration: 0
+  property var modeQueue: []
+  property int modeProcWorkspace: -1
+  property int modeProcGeneration: 0
+
+  function modeGlyph(mode) {
+    if (mode === "scrolling") return "󰝥"
+    if (mode === "floating") return "󰔶"
+    return "󱓻"
+  }
+
+  function modeName(mode) {
+    if (mode === "scrolling") return "Scrolling"
+    if (mode === "floating") return "Floating"
+    return "Tiling"
+  }
+
+  function modeOf(id) {
+    var _rev = root.modeRevision
+    var mode = root.modeCache[id]
+    return mode === undefined ? "" : mode
+  }
+
+  function requestMode(id) {
+    if (!(id > 0) || root.modeCache[id] !== undefined) return
+    if (root.modeQueue.indexOf(id) !== -1) return
+    if (modeProc.running && root.modeProcWorkspace === id && root.modeProcGeneration === root.modeGeneration) return
+    root.modeQueue.push(id)
+  }
+
+  // The workspaces whose shape is on screen: the shown one, every one on the
+  // bar when shapes are always shown, and the one the hover card describes.
+  function readNeededModes() {
+    if (root.alwaysShowLayoutShapes) {
+      var ids = root.displayedWorkspaceIds
+      for (var i = 0; i < ids.length; i++) root.requestMode(ids[i])
+    }
+    root.requestMode(root.shownWorkspaceId)
+    if (root.hoveredWorkspaceId > 0) root.requestMode(root.hoveredWorkspaceId)
+    root.pumpModes()
+  }
+
+  // Deferred so a burst of changes reads each workspace once, and never from
+  // inside a binding
+  function queueModeReads() {
+    Qt.callLater(root.readNeededModes)
+  }
+
+  function pumpModes() {
+    if (modeProc.running) return
+    while (root.modeQueue.length > 0) {
+      var id = root.modeQueue.shift()
+      if (root.modeCache[id] !== undefined) continue
+      root.modeProcWorkspace = id
+      root.modeProcGeneration = root.modeGeneration
+      modeProc.command = ["omarchy-hyprland-workspace-layout-current", String(id)]
+      modeProc.running = true
+      return
+    }
+  }
+
+  function refreshModes() {
+    root.modeCache = ({})
+    root.modeQueue = []
+    root.modeGeneration++
+    root.modeRevision++
+    root.queueModeReads()
+  }
+
+  Process {
+    id: modeProc
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var mode = text.trim()
+        // A read that started before a refresh may predate the change
+        if (!mode || root.modeProcGeneration !== root.modeGeneration) return
+        root.modeCache[root.modeProcWorkspace] = mode
+        root.modeRevision++
+      }
+    }
+    // Deferred: the process still reports running while it signals exit
+    onRunningChanged: if (!running) Qt.callLater(root.pumpModes)
+  }
+
+  // The layout commands act on the focused workspace, so a click on another
+  // monitor's bar focuses that monitor first.
+  function cycleLayout() {
+    if (!root.bar) return
+    var command = "omarchy-hyprland-workspace-layout-toggle"
+    if (root.monitor && !root.monitor.focused) {
+      command = "hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ monitor = \"" + root.monitorName + "\" })") + " >/dev/null && " + command
+    }
+    root.bar.run(command)
+  }
+
+  // Whether Omarchy's own workspaces widget is on the bar too
+  readonly property bool builtinWorkspacesOnBar: {
+    var layout = root.bar && root.bar.layoutConfig ? root.bar.layoutConfig : null
+    if (!layout || typeof layout !== "object") return false
+    for (var section in layout) {
+      var list = layout[section]
+      if (!Array.isArray(list)) continue
+      for (var i = 0; i < list.length; i++) {
+        var entry = list[i]
+        var id = typeof entry === "string" ? entry : (entry && entry.id)
+        if (id === "omarchy.workspaces") return true
+      }
+    }
+    return false
+  }
+
+  // Super + L and the default layout ask the workspaces widget to refresh.
+  // Only one handler gets a target, and a plugin cannot reach the built-in
+  // widget to pass the call on, so the target is left to it while it is on
+  // the bar; the notification file below covers that case.
+  ShellIpc {
+    target: "omarchy.workspaces"
+    enabled: !root.builtinWorkspacesOnBar
+
+    function refresh(): void { root.broadcast("refreshModes") }
+  }
+
+  // When the built-in widget owns the IPC target, the layout toggle still
+  // rewrites its notification state on every change, so watch that too.
+  FileView {
+    path: root.stateHome + "/omarchy/workspace-layout-notification"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: {
+      reload()
+      Qt.callLater(root.refreshModes)
+    }
+  }
+
+  // ------------------------------------------------------- wheel scrolling
+
+  // A wheel notch moves one entry along the row, and a touchpad adds up its
+  // smaller deltas until they make a notch's worth.
+  property real wheelAccumulator: 0
+
+  function scrollWorkspaces(delta) {
+    var wheel = Util.wheelSteps(root.wheelAccumulator, delta)
+    root.wheelAccumulator = wheel.remainder
+    if (wheel.steps === 0) return
+
+    // Holds at either end rather than wrapping, so a touchpad swipe that runs
+    // long stops on the last workspace.
+    var ids = root.displayedWorkspaceIds
+    var index = ids.indexOf(root.shownWorkspaceId)
+    if (index === -1) return
+    var target = ids[Util.clamp(index - wheel.steps, 0, ids.length - 1)]
+    if (target === ids[index]) return
+    // Scrolling moves on from a peek rather than back
+    if (root.isPeeking) root.dropPeek()
+    root.focusWorkspace(target)
   }
 
   Process {
@@ -148,6 +439,7 @@ BarWidget {
 
   Component.onCompleted: {
     root.refreshClients()
+    root.refreshModes()
   }
 
   // root.bar may already be torn down here, so revert a peek directly
@@ -161,51 +453,69 @@ BarWidget {
     target: Hyprland
     function onRawEvent(event) {
       root.wsRevision++
+      var name = event ? String(event.name) : ""
       // Always refresh: occupancy is read from the live client list, since
       // workspace.toplevels can miss windows (e.g. after a shell restart)
-      if (event && root.clientEvents.indexOf(event.name) !== -1) {
+      if (root.clientEvents.indexOf(name) !== -1) {
         root.refreshClients()
+      }
+      if (name === "configreloaded") root.refreshModes()
+      // Quickshell credits every workspace switch to the focused monitor, as
+      // the event doesn't say which one switched, and misses the workspace a
+      // monitor falls back to when its own is moved away. Moving workspaces
+      // between monitors switches the others, so ask Hyprland for the truth.
+      // A workspace that changes number is only learned by asking too. Every
+      // bar shares what Hyprland answers, so one asks after a plain switch.
+      var switched = name === "workspacev2" && root.monitor !== null && root.monitor.focused
+      if (switched || name === "moveworkspacev2" || name === "changeworkspaceid") {
+        Hyprland.refreshMonitors()
+        Hyprland.refreshWorkspaces()
       }
     }
   }
 
+  // This monitor's block: workspaces 1 to N when kept, the ones with windows,
+  // and the one it shows. After them come workspaces only visiting this
+  // monitor from another block (an unplugged monitor's, with no room here).
   readonly property var displayedWorkspaceIds: {
     var _rev = root.wsRevision
+    var base = root.block * root.slots
     var ids = []
-    var values = Hyprland.workspaces.values
-    var focusedWs = Hyprland.focusedWorkspace
-    var focusedId = focusedWs ? focusedWs.id : 1
+    var guests = []
 
+    function addOwn(id) {
+      if (id > base && id <= base + root.slots && ids.indexOf(id) === -1) ids.push(id)
+    }
+
+    for (var n = 1; n <= root.persistentWorkspaces; n++) addOwn(base + n)
+
+    var values = Hyprland.workspaces.values
     for (var i = 0; i < values.length; i++) {
       var ws = values[i]
-      if (!ws) continue
-      var id = ws.id
-      if (id > 0 && id <= 10) {
-        var hasWindows = root.isOccupied(id)
-        var isFocused = (id === focusedId)
-        if (hasWindows || isFocused) {
-          if (ids.indexOf(id) === -1) ids.push(id)
-        }
+      if (!ws || ws.id <= 0) continue
+      if (root.blockOf(ws.id) === root.block) {
+        if (root.isOccupied(ws.id)) addOwn(ws.id)
+      } else if (ws.monitor && ws.monitor.name === root.monitorName && guests.indexOf(ws.id) === -1) {
+        guests.push(ws.id)
       }
     }
 
     // Hyprland.workspaces can also miss a workspace, so add live ones directly
-    for (var liveId in root.liveOccupiedIds) {
-      var lid = Number(liveId)
-      if (lid > 0 && lid <= 10 && ids.indexOf(lid) === -1) ids.push(lid)
-    }
+    for (var liveId in root.liveOccupiedIds) addOwn(Number(liveId))
 
-    if (focusedId > 0 && focusedId <= 10 && ids.indexOf(focusedId) === -1) {
-      ids.push(focusedId)
-    }
-
-    for (var n = 1; n <= root.persistentWorkspaces; n++) {
-      if (ids.indexOf(n) === -1) ids.push(n)
+    var shown = root.shownWorkspaceId
+    if (shown > 0) {
+      if (root.blockOf(shown) === root.block) addOwn(shown)
+      else if (guests.indexOf(shown) === -1) guests.push(shown)
     }
 
     ids.sort(function(left, right) { return left - right })
-    return ids
+    guests.sort(function(left, right) { return left - right })
+    return ids.concat(guests)
   }
+
+  onDisplayedWorkspaceIdsChanged: if (root.alwaysShowLayoutShapes) root.queueModeReads()
+  onHoveredWorkspaceIdChanged: root.queueModeReads()
 
   property FileView themeColorsFile: FileView {
     id: themeColorsFile
@@ -241,8 +551,17 @@ BarWidget {
     return c ? c : "#b587a0"
   }
 
+  // This bar's monitor has focus, so Super + number acts on it
+  readonly property bool monitorFocused: root.monitor !== null && Hyprland.focusedMonitor !== null
+    && Hyprland.focusedMonitor.name === root.monitorName
+
+  // A bar on a monitor other than the first marks its shown workspace in the
+  // second-screen color instead of the accent, so the screens tell apart
+  readonly property bool onSecondScreen: root.colorSecondaryMonitor && root.monitor !== null && root.monitor.id > 0
+  readonly property color barAccent: root.onSecondScreen ? root.secondScreenColor : Color.accent
+
   function isSecondScreenWorkspace(ws) {
-    if (!ws) return false
+    if (!ws) return root.monitor !== null && root.monitor.id > 0
     if (ws.monitor) {
       if (ws.monitor.id !== undefined && ws.monitor.id !== null && ws.monitor.id > 0) return true
     }
@@ -257,13 +576,7 @@ BarWidget {
     closeTimer.stop()
     peekTimer.stop()
     unpeekTimer.stop()
-    if (root.isPeeking) {
-      if (root.originalWorkspaceId !== -1) {
-        root.focusWorkspace(root.originalWorkspaceId)
-      }
-      root.isPeeking = false
-      root.originalWorkspaceId = -1
-    }
+    if (root.isPeeking) root.revertPeek()
     previewPopup.open = false
     root.hoveredWorkspaceId = -1
   }
@@ -299,7 +612,14 @@ BarWidget {
     return root.displayedWorkspaceIds
   }
 
+  // A workspace of this monitor's block goes through o.workspaces.focus, which
+  // reclaims it from wherever an unplug left it, as Super + number does. A
+  // visiting one is focused by its id.
   function focusWorkspaceCommand(id) {
+    if (root.blockOf(id) === root.block) {
+      var target = root.monitorName !== "" ? ", \"" + root.monitorName + "\"" : ""
+      return "o.workspaces.focus(" + root.slotOf(id) + target + ")"
+    }
     return "hl.dsp.focus({ workspace = \"" + id + "\" })"
   }
 
@@ -322,10 +642,7 @@ BarWidget {
     var addr = root.formatAddress(target)
     var targetWs = (wsId !== undefined && wsId !== -1) ? wsId : root.hoveredWorkspaceId
 
-    peekTimer.stop()
-    unpeekTimer.stop()
-    root.isPeeking = false
-    root.originalWorkspaceId = -1
+    root.dropPeek()
     previewPopup.open = false
     root.hoveredWorkspaceId = -1
 
@@ -344,10 +661,7 @@ BarWidget {
 
   function commitAndFocusWorkspace(wsId) {
     var targetWs = (wsId !== undefined && wsId !== -1) ? wsId : root.hoveredWorkspaceId
-    peekTimer.stop()
-    unpeekTimer.stop()
-    root.isPeeking = false
-    root.originalWorkspaceId = -1
+    root.dropPeek()
     previewPopup.open = false
     root.hoveredWorkspaceId = -1
     if (targetWs !== undefined && targetWs !== -1) {
@@ -369,9 +683,7 @@ BarWidget {
   // A workspace that does not exist yet falls back to this bar's own monitor
   function monitorForWorkspace(ws) {
     if (ws && ws.monitor) return ws.monitor
-    var win = root.QsWindow.window
-    if (win && win.screen) return Hyprland.monitorFor(win.screen)
-    return Hyprland.focusedMonitor
+    return root.monitor
   }
 
   function iconSource(appClass) {
@@ -426,13 +738,15 @@ BarWidget {
     repeat: false
     onTriggered: {
       if (!root.isPeeking && root.hoveredWorkspaceId !== -1) {
-        var currentFocus = Hyprland.focusedWorkspace ? Hyprland.focusedWorkspace.id : 1
+        var currentFocus = root.shownWorkspaceId
         // Focusing another monitor moves focus (and the cursor) off the card
-        var focusedMon = Hyprland.focusedMonitor
-        var sameMonitor = !!(root.activeMonitor && focusedMon && root.activeMonitor.name === focusedMon.name)
-        if (currentFocus !== root.hoveredWorkspaceId && sameMonitor) {
+        var sameMonitor = !!(root.monitor && root.monitor.focused && root.activeMonitor
+          && root.activeMonitor.name === root.monitorName)
+        if (currentFocus > 0 && currentFocus !== root.hoveredWorkspaceId && sameMonitor) {
           root.originalWorkspaceId = currentFocus
           root.isPeeking = true
+          root.revertTargetId = -1
+          revertTimer.stop()
           root.focusWorkspace(root.hoveredWorkspaceId)
         }
       }
@@ -445,27 +759,30 @@ BarWidget {
     interval: 150
     repeat: false
     onTriggered: {
-      if (root.isPeeking && !previewPopup.containsMouse) {
-        if (root.originalWorkspaceId !== -1) {
-          root.focusWorkspace(root.originalWorkspaceId)
-        }
-        root.isPeeking = false
-        root.originalWorkspaceId = -1
+      // Back on the peeked workspace's own button, the peek holds so a click
+      // there commits to it
+      if (root.isPeeking && !previewPopup.containsMouse && !root.hoveringPeekedButton()) {
+        root.revertPeek()
       }
     }
   }
 
+  property Item hoveredButton: null
+
+  function hoveringPeekedButton() {
+    return root.isHoveringButton && root.hoveredButton !== null
+      && root.hoveredButton.modelData === root.hoveredWorkspaceId
+  }
+
   function handleButtonHovered(btn, wsId) {
     root.isHoveringButton = true
+    root.hoveredButton = btn
     if (!root.previewEnabled || settingsPanel.opened) return
     closeTimer.stop()
-    if (root.isPeeking) {
-      if (root.originalWorkspaceId !== -1) {
-        root.focusWorkspace(root.originalWorkspaceId)
-      }
-      root.isPeeking = false
-      root.originalWorkspaceId = -1
-    }
+    // Moving from the peeked preview back up to that workspace's button keeps
+    // the peek, so clicking it commits instead of reading as a click on the
+    // shown workspace (which would cycle its layout). Any other button ends it.
+    if (root.isPeeking && wsId !== root.hoveredWorkspaceId) root.revertPeek()
     peekTimer.stop()
     unpeekTimer.stop()
 
@@ -483,6 +800,8 @@ BarWidget {
 
   function handleButtonUnhovered(wsId) {
     root.isHoveringButton = false
+    // The next button's hover can land before this one's leave
+    if (root.hoveredButton && root.hoveredButton.modelData === wsId) root.hoveredButton = null
     openTimer.stop()
     closeTimer.restart()
   }
@@ -580,6 +899,14 @@ BarWidget {
   readonly property real scaleX: previewWidth / (monWidth > 0 ? monWidth : 1536)
   readonly property real scaleY: previewHeight / (monHeight > 0 ? monHeight : 864)
 
+  readonly property string hoveredMode: root.hoveredWorkspaceId > 0 ? root.modeOf(root.hoveredWorkspaceId) : ""
+
+  // Omarchy 4.5's bar draws the open-panel mark under this item, so it sits
+  // under the workspace whose card or settings are open, not mid-widget.
+  readonly property Item openPanelIndicatorItem: settingsPanel.opened && root.settingsAnchorButton
+    ? root.settingsAnchorButton
+    : (previewPopup.open && root.activeAnchorItem ? root.activeAnchorItem : null)
+
   readonly property real trailingGap: root.vertical ? 0 : Style.spaceReal(1.5)
 
   implicitWidth: grid.implicitWidth + trailingGap
@@ -599,51 +926,131 @@ BarWidget {
       WidgetButton {
         id: btn
         required property int modelData
+        required property int index
 
         readonly property var workspace: root.workspaceById(modelData)
         readonly property bool occupied: root.isOccupied(modelData)
-        readonly property bool focused: Hyprland.focusedWorkspace !== null && Hyprland.focusedWorkspace.id === modelData
-        readonly property bool isSecondScreen: root.colorSecondaryMonitor && root.isSecondScreenWorkspace(workspace)
+        // The workspace this monitor really shows, not one a peek is showing
+        readonly property bool shown: root.shownWorkspaceId === modelData
+        // Solid on the focused screen's bar, faded on the others, so the bar
+        // tells which screen Super + number will act on
+        readonly property bool lit: shown && root.monitorFocused
+        readonly property string mode: root.modeOf(modelData)
+        readonly property bool showShape: mode !== "" && (root.alwaysShowLayoutShapes || (root.showLayoutShape && shown))
+        readonly property bool floatingShape: showShape && mode === "floating"
+        readonly property color markColor: shown
+          ? (lit ? root.barAccent : Util.alpha(root.barAccent, 0.4))
+          : Util.alpha(btn.foreground, 0.16)
+        // The first workspace visiting from another block, set apart by a gap
+        readonly property bool firstGuest: index > 0 && root.blockOf(modelData) !== root.block
+          && root.blockOf(root.displayedWorkspaceIds[index - 1]) === root.block
+
+        Layout.leftMargin: firstGuest && !root.vertical ? Style.space(6) : 0
+        Layout.topMargin: firstGuest && root.vertical ? Style.space(6) : 0
 
         bar: root.bar
-        text: modelData === 10 ? "0" : String(modelData)
-        active: focused
+        // Every workspace keeps its number; a shape, when shown, sits behind it
+        text: root.slotLabel(modelData)
+        active: lit
         activeColor: Color.background
-        foreground: isSecondScreen ? root.secondScreenColor : (bar ? bar.barForeground : Color.foreground)
-        opacity: occupied || focused ? 1 : 0.5
+        foreground: bar ? bar.barForeground : Color.foreground
+        opacity: occupied || shown ? 1 : 0.5
         horizontalMargin: 6
         verticalPadding: 6
-        fixedWidth: root.vertical ? root.barSize : Style.space(20)
+        // A triangle needs a wider slot so it doesn't run into its neighbours
+        fixedWidth: root.vertical ? root.barSize : Style.space(floatingShape ? 26 : 20)
         fixedHeight: root.barSize
+
+        // WidgetButton centers the figures of a number label itself, so the
+        // user's nudge is added on top, and only once there is one to add.
+        property Item numberLabel: null
+        property bool offsetBound: false
+
+        FontMetrics {
+          id: figureMetrics
+          font.family: btn.fontFamily
+          font.pixelSize: btn.fontSize
+          font.bold: btn.shown
+        }
+
+        function bindLabelOffset() {
+          if (btn.offsetBound || !btn.numberLabel || root.labelVerticalOffset === 0) return
+          btn.offsetBound = true
+          btn.numberLabel.anchors.verticalCenterOffset = Qt.binding(function() {
+            var centered = !btn.centerFigures || btn.vertical || btn.text.indexOf("\n") !== -1 ? 0
+              : (figureMetrics.descent - figureMetrics.ascent + figureMetrics.tightBoundingRect("0").height) / 2
+            // Style.space() returns 0 for negative input, so scale the magnitude
+            var v = root.labelVerticalOffset
+            return centered + (v < 0 ? -Style.space(-v) : Style.space(v))
+          })
+        }
+
+        Connections {
+          target: root
+          function onLabelVerticalOffsetChanged() { btn.bindLabelOffset() }
+        }
 
         Component.onCompleted: {
           for (var i = 0; i < children.length; i++) {
-            if (children[i] && children[i].font) {
-              children[i].font.bold = Qt.binding(function() { return btn.focused })
-              // Style.space() returns 0 for negative input, so scale the magnitude
-              children[i].anchors.verticalCenterOffset = Qt.binding(function() {
-                var v = root.labelVerticalOffset
-                return v < 0 ? -Style.space(-v) : Style.space(v)
-              })
+            var child = children[i]
+            if (child && child.font && "verticalAlignment" in child && "renderType" in child) {
+              child.font.bold = Qt.binding(function() { return btn.shown })
+              btn.numberLabel = child
+              break
             }
           }
+          btn.bindLabelOffset()
           if (btn.modelData === root.settingsWorkspaceId) root.settingsAnchorButton = btn
         }
 
+        // Accent pill behind the shown workspace's number, or its layout
+        // shape (square tiles, circle scrolls, triangle floats) when shown
         Rectangle {
           z: -1
           anchors.centerIn: parent
           width: Style.space(20)
           height: Style.space(20)
           radius: Style.space(4)
-          color: btn.isSecondScreen ? root.secondScreenColor : Color.accent
-          visible: btn.focused
+          color: btn.markColor
+          visible: btn.shown && !btn.showShape
+        }
+
+        OpticalGlyph {
+          z: -1
+          visible: btn.showShape
+          // Workspaces not on screen get a smaller mark around the same number
+          // A triangle is drawn larger, since its middle, where the number
+          // sits, is narrower than a square's
+          readonly property real markSize: btn.floatingShape ? (btn.shown ? 26 : 24) : (btn.shown ? 20 : 17)
+          width: Style.space(markSize + 2)
+          height: width
+          anchors.centerIn: parent
+          // A triangle's centroid sits a sixth of its height below the middle
+          // of its bounds. Raising it halfway there lets the number sit in
+          // the wide part without the tip touching the edge of the bar.
+          anchors.verticalCenterOffset: btn.floatingShape ? -paintedHeight / 12 : 0
+          text: root.modeGlyph(btn.mode)
+          fontFamily: btn.fontFamily
+          fontSize: Style.font.body
+          paintedSize: Style.space(markSize)
+          color: btn.markColor
+          scale: btn.pressScale
         }
 
         onPressed: function(button) {
-          if (button === Qt.RightButton) root.toggleSettings(btn, btn.modelData)
-          else root.commitAndFocusWorkspace(modelData)
+          if (button === Qt.RightButton) {
+            root.toggleSettings(btn, btn.modelData)
+            return
+          }
+          // Only a click on the workspace that is really on screen cycles its
+          // layout. During a peek, or while one is switching back, the click
+          // commits to the workspace instead.
+          var onScreen = btn.shown && root.activeWorkspaceId() === btn.modelData
+            && !root.isPeeking && root.revertTargetId <= 0
+          if (button === Qt.LeftButton && onScreen && root.cycleLayoutOnClick) root.cycleLayout()
+          else root.commitAndFocusWorkspace(btn.modelData)
         }
+        onWheelMoved: function(delta) { root.scrollWorkspaces(delta) }
 
         HoverHandler {
           id: hov
@@ -676,13 +1083,7 @@ BarWidget {
       if (!previewPopup.open) {
         peekTimer.stop()
         unpeekTimer.stop()
-        if (root.isPeeking) {
-          if (root.originalWorkspaceId !== -1) {
-            root.focusWorkspace(root.originalWorkspaceId)
-          }
-          root.isPeeking = false
-          root.originalWorkspaceId = -1
-        }
+        if (root.isPeeking) root.revertPeek()
       }
     }
   }
@@ -715,7 +1116,7 @@ BarWidget {
         width: parent.width
 
         Text {
-          text: "Workspace " + (root.hoveredWorkspaceId === 10 ? "0" : String(root.hoveredWorkspaceId))
+          text: "Workspace " + (root.hoveredWorkspaceId > 0 ? root.slotLabel(root.hoveredWorkspaceId) : "")
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Style.font.body
           font.bold: true
@@ -726,6 +1127,15 @@ BarWidget {
           textFormat: Text.PlainText
           visible: root.activeMonitor !== null
           text: "• " + (root.activeMonitor ? root.activeMonitor.name : "")
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Style.font.caption
+          color: Color.muted
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          visible: root.hoveredMode !== ""
+          text: "• " + root.modeGlyph(root.hoveredMode) + " " + root.modeName(root.hoveredMode)
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Style.font.caption
           color: Color.muted

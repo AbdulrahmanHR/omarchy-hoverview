@@ -24,6 +24,8 @@ Panel {
   property var values: root.normalize(null)
   property var pending: ({})
   property bool inBar: true
+  // Omarchy's own workspaces widget, which Hoverview replaces, is on the bar
+  property bool builtinOnBar: false
   property bool readQueued: false
   // Bumped per write; a read that began before a write is stale
   property int writeGen: 0
@@ -48,7 +50,9 @@ Panel {
 
   readonly property var sections: {
     var v = root.values || ({})
-    var list = ["persistentWorkspaces", "labelVerticalOffset", "preview"]
+    var list = root.builtinOnBar ? ["replaceBuiltin"] : []
+    list.push("persistentWorkspaces", "labelVerticalOffset", "showLayoutShape", "alwaysShowLayoutShapes",
+      "cycleLayoutOnClick", "preview")
     if (v.preview) {
       list.push("hoverDelayMs", "previewWidth", "livePreview", "showWindowList")
       if (v.showWindowList) list.push("maxListedWindows")
@@ -66,6 +70,9 @@ Panel {
     return [
       { key: "persistentWorkspaces", type: "int", fallback: 0, min: 0, max: 10, step: 1 },
       { key: "labelVerticalOffset", type: "number", fallback: 0, min: -10, max: 10, step: 0.5 },
+      { key: "showLayoutShape", type: "bool", fallback: true },
+      { key: "alwaysShowLayoutShapes", type: "bool", fallback: false },
+      { key: "cycleLayoutOnClick", type: "bool", fallback: true },
       { key: "colorSecondaryMonitor", type: "bool", fallback: true },
       { key: "secondaryMonitorColor", type: "color", fallback: "" },
       { key: "preview", type: "bool", fallback: true },
@@ -124,7 +131,7 @@ Panel {
   function findEntry(config) {
     var layout = config && config.bar ? config.bar.layout : null
     if (!layout || typeof layout !== "object") return null
-    var regions = ["left", "center", "right"]
+    var regions = ["left", "centerBegin", "center", "centerEnd", "right", "tray"]
     for (var r = 0; r < regions.length; r++) {
       var list = layout[regions[r]]
       if (!Array.isArray(list)) continue
@@ -135,6 +142,23 @@ Panel {
       }
     }
     return null
+  }
+
+  function entryId(entry) {
+    return typeof entry === "string" ? entry : (entry && typeof entry === "object" ? String(entry.id || "") : "")
+  }
+
+  function hasBuiltinWorkspaces(config) {
+    var layout = config && config.bar ? config.bar.layout : null
+    if (!layout || typeof layout !== "object") return false
+    for (var section in layout) {
+      var list = layout[section]
+      if (!Array.isArray(list)) continue
+      for (var i = 0; i < list.length; i++) {
+        if (root.entryId(list[i]) === "omarchy.workspaces") return true
+      }
+    }
+    return false
   }
 
   // Reads never write. Unsaved edits stay on top of what was read.
@@ -151,6 +175,7 @@ Panel {
     }
     var entry = root.findEntry(config)
     root.inBar = entry !== null
+    root.builtinOnBar = root.hasBuiltinWorkspaces(config)
     var next = root.normalize(entry)
     if (writeProc.running && writeProc.key !== "") next[writeProc.key] = writeProc.value
     for (var key in root.pending) next[key] = root.pending[key]
@@ -183,10 +208,70 @@ Panel {
 
   // Picks up edits made elsewhere (CLI, editor) while the card is open
   FileView {
+    id: shellConfigFile
     path: root.opened ? root.shellConfigPath : ""
     watchChanges: true
     printErrors: false
-    onFileChanged: root.refresh()
+    atomicWrites: true
+    blockLoading: true
+    onFileChanged: {
+      reload()
+      root.refresh()
+    }
+  }
+
+  // ------------------------------------------------- replacing the built-in
+
+  // A widget plugin may only change its own entry through the shell, and
+  // `omarchy bar` has no way to take a widget off, so the swap edits
+  // shell.json itself: Hoverview takes the built-in's place, keeping its own
+  // settings, and the built-in leaves every section. The shell reloads the
+  // file on save. Only ever run from the button, never on its own.
+  function replaceBuiltin() {
+    var config = null
+    try {
+      config = JSON.parse(String(shellConfigFile.text() || ""))
+    } catch (e) {
+      root.errorText = "Could not read shell.json"
+      return
+    }
+    var layout = config && config.bar ? config.bar.layout : null
+    if (!layout || typeof layout !== "object") {
+      root.errorText = "shell.json has no bar layout"
+      return
+    }
+
+    var own = null
+    var section
+    for (section in layout) {
+      if (!Array.isArray(layout[section])) continue
+      layout[section] = layout[section].filter(function(entry) {
+        if (root.entryId(entry) !== root.pluginId) return true
+        if (own === null) own = entry
+        return false
+      })
+    }
+    if (own === null) own = { id: root.pluginId }
+
+    var placed = false
+    for (section in layout) {
+      if (!Array.isArray(layout[section])) continue
+      var next = []
+      for (var i = 0; i < layout[section].length; i++) {
+        var entry = layout[section][i]
+        if (root.entryId(entry) !== "omarchy.workspaces") next.push(entry)
+        else if (!placed) {
+          next.push(own)
+          placed = true
+        }
+      }
+      layout[section] = next
+    }
+    if (!placed) return
+
+    shellConfigFile.setText(JSON.stringify(config, null, 2) + "\n")
+    root.builtinOnBar = false
+    root.errorText = ""
   }
 
   // ---------------------------------------------------------------- writing
@@ -378,7 +463,8 @@ Panel {
   function clampCursor() {
     var list = root.sections
     if (list.indexOf(root.focusSection) !== -1) return
-    var order = ["persistentWorkspaces", "labelVerticalOffset", "preview", "hoverDelayMs", "previewWidth",
+    var order = ["replaceBuiltin", "persistentWorkspaces", "labelVerticalOffset", "showLayoutShape",
+      "alwaysShowLayoutShapes", "cycleLayoutOnClick", "preview", "hoverDelayMs", "previewWidth",
       "livePreview", "showWindowList", "maxListedWindows", "highlightLastFocused", "peekOnHover",
       "peekDelayMs", "colorSecondaryMonitor", "secondaryMonitorColor", "reset"]
     for (var i = order.indexOf(root.focusSection); i >= 0; i--) {
@@ -412,6 +498,7 @@ Panel {
     root.clampCursor()
     var key = root.focusSection
     if (key === "reset") root.openConfirm()
+    else if (key === "replaceBuiltin") root.replaceBuiltin()
     else if (key === "secondaryMonitorColor") root.chooseColor(root.selectedIndex)
     else if (root.specFor(key) && root.specFor(key).type === "bool") root.flip(key)
   }
@@ -534,6 +621,51 @@ Panel {
             }
           }
 
+          // ---------- Built-in still on the bar ----------
+          // A fresh install lands next to Omarchy's own workspaces, which then
+          // show twice and keep the layout refresh to themselves.
+          Item {
+            visible: root.builtinOnBar
+            width: parent.width
+            implicitHeight: visible ? Math.max(builtinText.implicitHeight, replaceButton.implicitHeight) : 0
+
+            Text {
+              id: builtinText
+              textFormat: Text.PlainText
+              anchors.left: parent.left
+              anchors.leftMargin: Style.space(10)
+              anchors.right: replaceButton.left
+              anchors.rightMargin: Style.space(8)
+              anchors.verticalCenter: parent.verticalCenter
+              text: "Omarchy's own workspaces are also on the bar"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            Button {
+              id: replaceButton
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              text: "Replace them"
+              iconText: "\uDB81\uDCE1"
+              iconSize: Style.font.body
+              fontSize: Style.font.bodySmall
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              horizontalPadding: Style.spacing.lg
+              verticalPadding: Style.spacing.controlPaddingY
+              bordered: true
+              hasCursor: root.cursorAt("replaceBuiltin")
+              onClicked: root.replaceBuiltin()
+              tooltipText: "Put Hoverview where Omarchy's workspaces are and take those off the bar"
+              onHovered: function(isHovered) {
+                if (isHovered) root.setCursor("replaceBuiltin", 0)
+              }
+            }
+          }
+
           // ---------- Workspaces ----------
           PanelSeparator { foreground: root.foreground }
 
@@ -551,15 +683,33 @@ Panel {
             StepperRow {
               key: "persistentWorkspaces"
               label: "Always show"
-              hint: "Keep workspaces 1 to N on the bar, even when empty"
+              hint: "Keep this monitor's workspaces 1 to N on the bar, even when empty"
               valueText: root.workspacesText(root.values.persistentWorkspaces)
             }
 
             StepperRow {
               key: "labelVerticalOffset"
               label: "Label offset"
-              hint: "Nudge the numbers up or down for fonts that sit off-center"
+              hint: "Nudge the labels up or down for fonts that sit off-center"
               valueText: root.offsetText(root.values.labelVerticalOffset)
+            }
+
+            SwitchRow {
+              key: "showLayoutShape"
+              label: "Layout shape"
+              hint: "Draw the active number on its layout shape: square, circle or triangle"
+            }
+
+            SwitchRow {
+              key: "alwaysShowLayoutShapes"
+              label: "Shapes everywhere"
+              hint: "Draw every workspace's number on a faint layout shape, not just the active one"
+            }
+
+            SwitchRow {
+              key: "cycleLayoutOnClick"
+              label: "Click to cycle layout"
+              hint: "Click the active workspace to cycle tiling, scrolling and floating, like Super + L"
             }
           }
 
@@ -657,7 +807,7 @@ Panel {
             GroupHeader {
               key: "colorSecondaryMonitor"
               title: "SECOND MONITOR"
-              hint: "Tint workspaces that live on another monitor"
+              hint: "Mark the shown workspace on other monitors' bars in this color"
             }
 
             Flow {
