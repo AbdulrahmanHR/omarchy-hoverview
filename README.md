@@ -33,9 +33,13 @@ workspace without switching to it.
 - **Full-screen peek.** Rest the pointer on the mini screen to briefly switch
   to that workspace (when it's on the monitor you're using). Move away and
   you're back where you were; click to stay.
-- **Multi-monitor.** On a secondary monitor's bar the shown workspace is
-  marked in your theme's magenta, or a color you pick, instead of the
-  accent, so you can tell screens apart at a glance.
+- **Keyboard overview.** A hotkey opens the same card on the focused
+  monitor, with keyboard focus, so you can look around and switch without the
+  mouse. See [Keyboard overview](#keyboard-overview).
+- **Multi-monitor.** On every non-primary monitor's bar the shown workspace
+  is marked in its own color instead of the accent (theme magenta, cyan,
+  yellow, … by default, or one you pick per monitor), so you can tell
+  screens apart at a glance.
 
 Each of these can be tuned or turned off. See [Settings](#settings).
 
@@ -72,6 +76,38 @@ If you added the plugin without enabling it:
 omarchy plugin enable io.github.abdulrahmanhr.hoverview
 ```
 
+## Keyboard overview
+
+Hoverview registers its own shortcut with Hyprland at run time, so there is
+nothing to add to `bindings.lua`. The default is `SUPER + ALT + grave`. It
+toggles the card on the focused monitor's bar.
+
+To change it, right-click a workspace number, open the settings panel and
+activate **Overview shortcut** (click it, or press Enter). Press the new
+combination (it needs Super, Ctrl or Alt), Esc to cancel or Backspace to turn
+the shortcut off. If another bind already uses the combination the panel says
+so. Combinations Hyprland already binds run their action instead of being
+recorded, so pick a free one. The value is stored as `overviewShortcut` in
+Hyprland syntax, e.g. `SUPER + ALT + grave` or `SUPER + CTRL + code:21`.
+
+If you would rather bind it yourself, turn the shortcut off and point your own
+bind at the same toggle, which keeps working:
+
+```lua
+o.bind("SUPER + ALT + grave", "Workspace overview", "omarchy-shell shell toggle io.github.abdulrahmanhr.hoverview")
+```
+
+The card opens on the workspace you're on and takes keyboard focus until you
+close it. It works even if the hover preview is turned off, and it never peeks.
+
+| Key | Action |
+| --- | --- |
+| Left / Right, `h` / `l` | Previous / next workspace (stops at the ends) |
+| Up / Down, `j` / `k` | Highlight a window in the list (Up from the first row goes back to the workspace) |
+| `1`–`9`, `0` | Jump to that number on this monitor |
+| Enter, Space | Focus the highlighted window, or switch to the workspace |
+| Esc, the hotkey again, click outside | Close without switching |
+
 ## Settings
 
 ### Settings panel
@@ -96,7 +132,8 @@ booleans so they're stored as real values, not strings:
 ```bash
 omarchy bar set io.github.abdulrahmanhr.hoverview previewWidth 520 --json
 omarchy bar set io.github.abdulrahmanhr.hoverview peekOnHover false --json
-omarchy bar set io.github.abdulrahmanhr.hoverview secondaryMonitorColor '#89b4fa'
+omarchy bar set io.github.abdulrahmanhr.hoverview overviewShortcut 'SUPER + CTRL + o'
+omarchy bar set io.github.abdulrahmanhr.hoverview monitorColors '{"DP-2":"#89b4fa","HDMI-A-1":"#a6e3a1"}'
 ```
 
 The entry in `shell.json` then looks like this:
@@ -106,7 +143,8 @@ The entry in `shell.json` then looks like this:
   "id": "io.github.abdulrahmanhr.hoverview",
   "previewWidth": 520,
   "peekOnHover": false,
-  "secondaryMonitorColor": "#89b4fa"
+  "overviewShortcut": "SUPER + CTRL + o",
+  "monitorColors": "{\"DP-2\":\"#89b4fa\"}"
 }
 ```
 
@@ -120,8 +158,10 @@ outside the range are clamped, and invalid values fall back to the default.
 | `showLayoutShape` | `true` | Draw the active workspace's number on its layout shape (square tiling, circle scrolling, triangle floating) instead of the plain accent pill. |
 | `alwaysShowLayoutShapes` | `false` | Draw every workspace's number on a faint layout shape, not only the active one. |
 | `cycleLayoutOnClick` | `true` | Click the already-active workspace to cycle its layout (tiling, scrolling, floating), like Super + L. |
-| `colorSecondaryMonitor` | `true` | Mark the shown workspace on a secondary monitor's bar (Hyprland monitor id above 0) in the color below instead of the accent. |
-| `secondaryMonitorColor` | `""` | Hex color for that tint, `#RRGGBB` or `#AARRGGBB`. Empty uses your theme's magenta (then purple, orange, yellow). |
+| `colorSecondaryMonitor` | `true` | Master switch: mark the shown workspace on every non-primary monitor's bar (Hyprland monitor id above 0) in that monitor's color instead of the accent. |
+| `monitorColors` | `""` | Per-monitor colors as a JSON object in a string, monitor name to `#RRGGBB` or `#AARRGGBB`, e.g. `{"DP-2":"#89b4fa"}`. A missing or empty entry uses the default below. The settings panel shows one swatch row per connected non-primary monitor; colors of unplugged monitors are kept. |
+| `secondaryMonitorColor` | `""` | Older single color for every non-primary monitor without its own entry in `monitorColors`. Empty gives each monitor a distinct theme color by order (by monitor id): magenta, cyan, yellow, green, blue, orange, red, skipping colors the theme lacks. |
+| `overviewShortcut` | `SUPER + ALT + grave` | Hyprland key combination that toggles the keyboard overview. Letters, digits, `_`, `:`, `+` and spaces only. Empty turns the shortcut off. |
 | `preview` | `true` | Show the hover card. Off turns the widget into plain workspace numbers. |
 | `hoverDelayMs` | `220` | How long to hover before the card opens. Milliseconds, 0–2000. |
 | `previewWidth` | `420` | Width of the preview, before UI scaling. Pixels, 240–800. |

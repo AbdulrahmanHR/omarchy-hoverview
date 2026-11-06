@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls as QQC
 import Quickshell
+import Quickshell.Hyprland
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
@@ -31,6 +32,12 @@ Panel {
   property int writeGen: 0
   property string errorText: ""
   property string themeText: ""
+  // Overview shortcut recording: while on, the next key press is captured
+  property bool recording: false
+  // Shown under the shortcut row: a conflict with another bind, or a hint
+  property string shortcutWarning: ""
+  // Set by BarWidget: why the bind could not be registered, if it could not
+  property string bindError: ""
 
   readonly property bool busy: writeProc.running || writeDebounce.running || Object.keys(root.pending).length > 0
 
@@ -59,8 +66,10 @@ Panel {
       list.push("highlightLastFocused", "peekOnHover")
       if (v.peekOnHover) list.push("peekDelayMs")
     }
-    list.push("colorSecondaryMonitor")
-    if (v.colorSecondaryMonitor) list.push("secondaryMonitorColor")
+    list.push("overviewShortcut", "colorSecondaryMonitor")
+    if (v.colorSecondaryMonitor) {
+      for (var m = 0; m < root.otherMonitors.length; m++) list.push("monitorColor:" + root.otherMonitors[m].name)
+    }
     list.push("reset")
     return list
   }
@@ -75,6 +84,8 @@ Panel {
       { key: "cycleLayoutOnClick", type: "bool", fallback: true },
       { key: "colorSecondaryMonitor", type: "bool", fallback: true },
       { key: "secondaryMonitorColor", type: "color", fallback: "" },
+      { key: "monitorColors", type: "map", fallback: "" },
+      { key: "overviewShortcut", type: "shortcut", fallback: "SUPER + ALT + grave" },
       { key: "preview", type: "bool", fallback: true },
       { key: "hoverDelayMs", type: "int", fallback: 220, min: 0, max: 2000, step: 10 },
       { key: "previewWidth", type: "int", fallback: 420, min: 240, max: 800, step: 10 },
@@ -106,6 +117,12 @@ Panel {
       }
       return spec.fallback
     }
+    if (spec.type === "shortcut") {
+      if (v === undefined || v === null) return spec.fallback
+      var combo = String(v).trim()
+      return combo === "" || /^[A-Za-z0-9_:+ ]+$/.test(combo) ? combo : spec.fallback
+    }
+    if (spec.type === "map") return root.mapText(root.parseMap(v))
     if (spec.type === "color") {
       var c = v === undefined || v === null ? "" : String(v).trim()
       return /^#([0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$/.test(c) ? c : ""
@@ -363,15 +380,9 @@ Panel {
     if (next !== root.values[key]) root.setValue(key, next)
   }
 
-  function chooseColor(index) {
-    var option = root.colorOptions[index]
-    if (!option) return
-    root.selectedIndex = index
-    if (option.value !== root.values.secondaryMonitorColor) root.setValue("secondaryMonitorColor", option.value, true)
-  }
-
   function resetDefaults() {
     root.confirmOpen = false
+    root.shortcutWarning = ""
     var list = root.specList()
     var next = Object.assign({}, root.values)
     var queued = Object.assign({}, root.pending)
@@ -415,12 +426,77 @@ Panel {
     return match ? match[1] : ""
   }
 
-  // What "" resolves to in BarWidget.qml
-  readonly property string themeTint: root.themeColor("magenta") || root.themeColor("purple")
-    || root.themeColor("orange") || root.themeColor("yellow") || "#b587a0"
+  // ------------------------------------------------- per-monitor colors
 
-  readonly property var colorOptions: {
-    var list = [{ value: "", color: root.themeTint, label: "Theme", hint: "Follow the theme's magenta" }]
+  // Connected non-primary monitors, by id
+  readonly property var otherMonitors: {
+    var out = []
+    var values = Hyprland.monitors ? Hyprland.monitors.values : []
+    for (var i = 0; i < values.length; i++) {
+      var mon = values[i]
+      if (mon.id <= 0) continue
+      var ipc = mon.lastIpcObject
+      out.push({ name: String(mon.name), id: mon.id, description: ipc && ipc.description ? String(ipc.description) : "" })
+    }
+    out.sort(function(a, b) { return a.id - b.id })
+    return out
+  }
+
+  // monitorColors is a JSON string (the schema has no object type), or an object
+  function parseMap(v) {
+    var obj = v
+    if (typeof v === "string") {
+      try { obj = JSON.parse(v) } catch (e) { obj = null }
+    }
+    var out = {}
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return out
+    for (var name in obj) {
+      var c = String(obj[name]).trim()
+      if (/^#([0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$/.test(c)) out[name] = c
+    }
+    return out
+  }
+
+  function mapText(map) {
+    return Object.keys(map).length > 0 ? JSON.stringify(map) : ""
+  }
+
+  function isMonitorSection(section) {
+    return String(section).indexOf("monitorColor:") === 0
+  }
+
+  function monitorOf(section) {
+    return String(section).slice("monitorColor:".length)
+  }
+
+  // What "" resolves to for a monitor in BarWidget.qml: the legacy single
+  // color if set, else a distinct theme color by order among other monitors
+  function defaultColorFor(name) {
+    if (root.values.secondaryMonitorColor) return root.values.secondaryMonitorColor
+    var groups = [["magenta", "purple", "orange", "yellow"], ["cyan"], ["yellow"], ["green"], ["blue"], ["orange"], ["red"]]
+    var palette = []
+    var seen = {}
+    for (var i = 0; i < groups.length; i++) {
+      for (var j = 0; j < groups[i].length; j++) {
+        var c = root.themeColor(groups[i][j])
+        if (!c) continue
+        if (!seen[c.toLowerCase()]) {
+          seen[c.toLowerCase()] = true
+          palette.push(c)
+        }
+        break
+      }
+    }
+    if (palette.length === 0) return "#b587a0"
+    var at = 0
+    for (var k = 0; k < root.otherMonitors.length; k++) {
+      if (root.otherMonitors[k].name === name) { at = k; break }
+    }
+    return palette[at % palette.length]
+  }
+
+  function colorOptionsFor(name) {
+    var list = [{ value: "", color: root.defaultColorFor(name), label: "Theme", hint: "Default for this monitor" }]
     var seen = {}
     var names = ["red", "orange", "yellow", "green", "cyan", "blue", "magenta", "accent"]
     for (var i = 0; i < names.length; i++) {
@@ -429,17 +505,148 @@ Panel {
       seen[c.toLowerCase()] = true
       list.push({ value: c, color: c, label: "", hint: names[i].charAt(0).toUpperCase() + names[i].slice(1) + "  " + c })
     }
-    var current = root.values.secondaryMonitorColor
+    var current = root.parseMap(root.values.monitorColors)[name] || ""
     if (current !== "" && !seen[current.toLowerCase()]) list.push({ value: current, color: current, label: "", hint: "Custom  " + current })
     return list
   }
 
-  readonly property int colorIndex: {
-    var current = String(root.values.secondaryMonitorColor).toLowerCase()
-    for (var i = 0; i < root.colorOptions.length; i++) {
-      if (root.colorOptions[i].value.toLowerCase() === current) return i
+  function colorIndexFor(name) {
+    var current = String(root.parseMap(root.values.monitorColors)[name] || "").toLowerCase()
+    var options = root.colorOptionsFor(name)
+    for (var i = 0; i < options.length; i++) {
+      if (options[i].value.toLowerCase() === current) return i
     }
     return 0
+  }
+
+  function chooseMonitorColor(name, index) {
+    var option = root.colorOptionsFor(name)[index]
+    if (!option) return
+    root.selectedIndex = index
+    var map = root.parseMap(root.values.monitorColors)
+    if (option.value === "") delete map[name]
+    else map[name] = option.value
+    var text = root.mapText(map)
+    if (text !== root.values.monitorColors) root.setValue("monitorColors", text, true)
+  }
+
+  // ------------------------------------------------------ overview shortcut
+
+  // xkb keycodes (evdev + 8) to Hyprland key names. Letters are named from the
+  // key itself, so other layouts get the letter they print.
+  readonly property var scanNames: ({
+    9: "ESCAPE", 10: "1", 11: "2", 12: "3", 13: "4", 14: "5", 15: "6", 16: "7", 17: "8", 18: "9", 19: "0",
+    20: "minus", 21: "equal", 22: "BACKSPACE", 23: "TAB", 34: "bracketleft", 35: "bracketright", 36: "RETURN",
+    47: "semicolon", 48: "apostrophe", 49: "grave", 51: "backslash", 59: "comma", 60: "period", 61: "slash",
+    65: "SPACE", 67: "F1", 68: "F2", 69: "F3", 70: "F4", 71: "F5", 72: "F6", 73: "F7", 74: "F8", 75: "F9",
+    76: "F10", 95: "F11", 96: "F12", 111: "UP", 113: "LEFT", 114: "RIGHT", 116: "DOWN",
+    191: "F13", 192: "F14", 193: "F15", 194: "F16", 195: "F17", 196: "F18", 197: "F19", 198: "F20",
+    199: "F21", 200: "F22", 201: "F23", 202: "F24"
+  })
+
+  function keyNameFor(event) {
+    var k = event.key
+    if (k >= Qt.Key_A && k <= Qt.Key_Z) return String.fromCharCode(65 + k - Qt.Key_A)
+    var sc = event.nativeScanCode
+    if (!sc) return ""
+    return root.scanNames[sc] || "code:" + sc
+  }
+
+  function isModifierKey(k) {
+    return k === Qt.Key_Shift || k === Qt.Key_Control || k === Qt.Key_Alt || k === Qt.Key_Meta
+      || k === Qt.Key_Super_L || k === Qt.Key_Super_R || k === Qt.Key_AltGr || k === Qt.Key_CapsLock
+      || k === Qt.Key_NumLock || k === Qt.Key_ScrollLock || k === Qt.Key_Hyper_L || k === Qt.Key_Hyper_R
+      || k === Qt.Key_Mode_switch
+  }
+
+  function startRecording() {
+    root.recording = true
+    root.shortcutWarning = ""
+    Qt.callLater(function() { if (root.recording) recorder.forceActiveFocus() })
+  }
+
+  function stopRecording() {
+    root.recording = false
+    keyCatcher.forceActiveFocus()
+  }
+
+  // Combos Hyprland already binds never get here: it runs them instead
+  function recordKey(event) {
+    event.accepted = true
+    if (event.isAutoRepeat) return
+    var k = event.key
+    var m = event.modifiers
+    var held = (m & Qt.MetaModifier) || (m & Qt.ControlModifier) || (m & Qt.AltModifier)
+    if (root.isModifierKey(k)) return
+    if (k === Qt.Key_Escape && m === Qt.NoModifier) {
+      root.stopRecording()
+      return
+    }
+    if (k === Qt.Key_Backspace && !held) {
+      root.stopRecording()
+      root.shortcutWarning = ""
+      if (root.values.overviewShortcut !== "") root.setValue("overviewShortcut", "", true)
+      return
+    }
+    if (!held) {
+      root.shortcutWarning = "Include Super, Ctrl or Alt"
+      return
+    }
+    var name = root.keyNameFor(event)
+    if (name === "") {
+      root.shortcutWarning = "Could not read that key"
+      return
+    }
+    var parts = []
+    var mask = 0
+    if (m & Qt.MetaModifier) { parts.push("SUPER"); mask |= 64 }
+    if (m & Qt.ControlModifier) { parts.push("CTRL"); mask |= 4 }
+    if (m & Qt.ShiftModifier) { parts.push("SHIFT"); mask |= 1 }
+    if (m & Qt.AltModifier) { parts.push("ALT"); mask |= 8 }
+    parts.push(name)
+    root.stopRecording()
+    root.shortcutWarning = ""
+    root.setValue("overviewShortcut", parts.join(" + "), true)
+    root.checkMask = mask
+    root.checkKey = name
+    if (!bindsProc.running) bindsProc.running = true
+  }
+
+  property int checkMask: 0
+  property string checkKey: ""
+
+  Process {
+    id: bindsProc
+    command: ["hyprctl", "binds", "-j"]
+    stdout: StdioCollector {
+      id: bindsOut
+      waitForEnd: true
+      onStreamFinished: root.checkConflicts(bindsOut.text)
+    }
+  }
+
+  // Another bind on the same modifiers and key; ours are not counted
+  function checkConflicts(text) {
+    var list = []
+    try { list = JSON.parse(String(text || "[]")) } catch (e) { return }
+    var found = []
+    var wantCode = root.checkKey.indexOf("code:") === 0 ? Number(root.checkKey.slice(5)) : -1
+    for (var i = 0; i < list.length; i++) {
+      var b = list[i]
+      var arg = String(b.arg || "")
+      // Our own bind, current or switched off (Hyprland keeps disabled binds
+      // in the list, and reports Lua binds by handle number, not by event),
+      // is known by the description BarWidget.bindLua gives it.
+      if (String(b.description || "") === "Workspace overview (Hoverview)" || arg.indexOf("hoverview overview") !== -1) continue
+      if (b.mouse || b.modmask !== root.checkMask) continue
+      var sameKey = String(b.key || "").toLowerCase() === root.checkKey.toLowerCase()
+        || (wantCode >= 0 && Number(b.keycode) === wantCode)
+      if (!sameKey) continue
+      var label = String(b.description || "")
+      if (label === "") label = String(b.dispatcher || "") + (arg !== "" ? " " + arg : "")
+      if (found.indexOf(label) === -1) found.push(label)
+    }
+    root.shortcutWarning = found.length > 0 ? "Also used by: " + found.slice(0, 2).join(", ") + (found.length > 2 ? " and more" : "") : ""
   }
 
   // ------------------------------------------------------------------ cursor
@@ -456,7 +663,7 @@ Panel {
   }
 
   function landingIndex(section) {
-    return section === "secondaryMonitorColor" ? root.colorIndex : 0
+    return root.isMonitorSection(section) ? root.colorIndexFor(root.monitorOf(section)) : 0
   }
 
   // A row that gets disabled hands the cursor to the toggle above it
@@ -466,8 +673,9 @@ Panel {
     var order = ["replaceBuiltin", "persistentWorkspaces", "labelVerticalOffset", "showLayoutShape",
       "alwaysShowLayoutShapes", "cycleLayoutOnClick", "preview", "hoverDelayMs", "previewWidth",
       "livePreview", "showWindowList", "maxListedWindows", "highlightLastFocused", "peekOnHover",
-      "peekDelayMs", "colorSecondaryMonitor", "secondaryMonitorColor", "reset"]
-    for (var i = order.indexOf(root.focusSection); i >= 0; i--) {
+      "peekDelayMs", "overviewShortcut", "colorSecondaryMonitor", "reset"]
+    var from = root.isMonitorSection(root.focusSection) ? "colorSecondaryMonitor" : root.focusSection
+    for (var i = order.indexOf(from); i >= 0; i--) {
       if (list.indexOf(order[i]) !== -1) {
         root.focusSection = order[i]
         root.selectedIndex = root.landingIndex(order[i])
@@ -488,10 +696,14 @@ Panel {
       return
     }
     if (dx === 0) return
+    if (root.isMonitorSection(root.focusSection)) {
+      var count = root.colorOptionsFor(root.monitorOf(root.focusSection)).length
+      root.selectedIndex = Math.max(0, Math.min(count - 1, root.selectedIndex + dx))
+      return
+    }
     var spec = root.specFor(root.focusSection)
     if (!spec) return
     if (spec.type === "int" || spec.type === "number") root.stepValue(spec.key, dx)
-    else if (spec.type === "color") root.selectedIndex = Math.max(0, Math.min(root.colorOptions.length - 1, root.selectedIndex + dx))
   }
 
   function activateCursor() {
@@ -499,7 +711,8 @@ Panel {
     var key = root.focusSection
     if (key === "reset") root.openConfirm()
     else if (key === "replaceBuiltin") root.replaceBuiltin()
-    else if (key === "secondaryMonitorColor") root.chooseColor(root.selectedIndex)
+    else if (key === "overviewShortcut") root.startRecording()
+    else if (root.isMonitorSection(key)) root.chooseMonitorColor(root.monitorOf(key), root.selectedIndex)
     else if (root.specFor(key) && root.specFor(key).type === "bool") root.flip(key)
   }
 
@@ -531,6 +744,8 @@ Panel {
   // Every open re-reads the config; the cursor stays hidden until hover or a key
   onOpenedChanged: {
     root.confirmOpen = false
+    root.recording = false
+    root.shortcutWarning = ""
     if (!root.opened) {
       if (writeDebounce.running) {
         writeDebounce.stop()
@@ -561,6 +776,8 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // While recording, the recorder below takes every key
+      blocked: root.recording
       onMoveRequested: function(dx, dy) {
         if (root.confirmOpen) {
           if (dx !== 0) resetConfirm.selectedIndex = resetConfirm.selectedIndex === 0 ? 1 : 0
@@ -584,6 +801,14 @@ Panel {
       onCloseRequested: {
         if (root.confirmOpen) root.confirmOpen = false
         else root.close()
+      }
+
+      Item {
+        id: recorder
+        width: 0
+        height: 0
+        Keys.onPressed: function(event) { root.recordKey(event) }
+        onActiveFocusChanged: if (!recorder.activeFocus && root.recording) root.stopRecording()
       }
 
       Flickable {
@@ -797,6 +1022,37 @@ Panel {
             }
           }
 
+          // ---------- Overview ----------
+          PanelSeparator { foreground: root.foreground }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(4)
+
+            PanelSectionHeader {
+              text: "OVERVIEW"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              bottomPadding: Style.space(2)
+            }
+
+            ShortcutRow {}
+
+            Text {
+              textFormat: Text.PlainText
+              visible: text !== ""
+              width: parent.width
+              leftPadding: Style.space(10)
+              rightPadding: Style.space(10)
+              text: root.recording ? "Press a shortcut\u2026 (Esc cancel, Backspace off)"
+                : (root.shortcutWarning !== "" ? root.shortcutWarning : root.bindError)
+              color: root.recording ? root.dim : root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+          }
+
           // ---------- Second monitor ----------
           PanelSeparator { foreground: root.foreground }
 
@@ -806,26 +1062,29 @@ Panel {
 
             GroupHeader {
               key: "colorSecondaryMonitor"
-              title: "SECOND MONITOR"
+              title: "OTHER MONITORS"
               hint: "Mark the shown workspace on other monitors' bars in this color"
             }
 
-            Flow {
-              x: Style.space(4)
-              width: parent.width - Style.space(8)
-              spacing: Style.space(6)
-              enabled: root.values.colorSecondaryMonitor
-              opacity: enabled ? 1 : root.disabledOpacity
+            Text {
+              textFormat: Text.PlainText
+              visible: root.otherMonitors.length === 0
+              x: Style.space(10)
+              width: parent.width - Style.space(20)
+              text: "Connect another monitor to pick its color"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
 
-              Repeater {
-                model: root.colorOptions
+            Repeater {
+              model: root.otherMonitors
 
-                Swatch {
-                  required property var modelData
-                  required property int index
-                  option: modelData
-                  optionIndex: index
-                }
+              MonitorColorRow {
+                required property var modelData
+                monitorName: modelData.name
+                description: modelData.description
               }
             }
           }
@@ -1174,14 +1433,119 @@ Panel {
     }
   }
 
-  // A theme color dot, or the labeled "Theme" chip for the empty value
+  // Label, the current combo (or Off) on the right; Enter or a click records
+  component ShortcutRow: CursorSurface {
+    id: shortcutRow
+
+    width: parent ? parent.width : implicitWidth
+    hasCursor: root.cursorAt("overviewShortcut")
+    onHasCursorChanged: if (shortcutRow.hasCursor) root.scrollIntoView(shortcutRow)
+    foreground: root.foreground
+    implicitHeight: Math.max(shortcutLabel.implicitHeight, shortcutValue.implicitHeight) + Style.space(10)
+
+    Text {
+      id: shortcutLabel
+      textFormat: Text.PlainText
+      anchors.left: parent.left
+      anchors.leftMargin: Style.space(10)
+      anchors.verticalCenter: parent.verticalCenter
+      text: "Overview shortcut"
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+    }
+
+    Text {
+      id: shortcutValue
+      textFormat: Text.PlainText
+      anchors.left: shortcutLabel.right
+      anchors.leftMargin: Style.space(8)
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(10)
+      anchors.verticalCenter: parent.verticalCenter
+      horizontalAlignment: Text.AlignRight
+      elide: Text.ElideMiddle
+      text: root.recording ? "Recording\u2026" : (root.values.overviewShortcut !== "" ? root.values.overviewShortcut : "Off")
+      color: root.recording ? Color.accent : (root.values.overviewShortcut !== "" ? root.foreground : root.dim)
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+      font.bold: true
+    }
+
+    MouseArea {
+      id: shortcutMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onEntered: root.setCursor("overviewShortcut", 0)
+      onClicked: {
+        root.setCursor("overviewShortcut", 0)
+        if (root.recording) root.stopRecording()
+        else root.startRecording()
+      }
+    }
+
+    PanelToolTip {
+      visible: shortcutMouse.containsMouse
+      text: "Opens the keyboard overview. Click to record a new shortcut."
+      fontFamily: root.fontFamily
+    }
+  }
+
+  // One non-primary monitor: its name and description over its swatches
+  component MonitorColorRow: Column {
+    id: monitorRow
+
+    property string monitorName: ""
+    property string description: ""
+    readonly property string section: "monitorColor:" + monitorRow.monitorName
+    readonly property var options: root.colorOptionsFor(monitorRow.monitorName)
+    readonly property int chosenIndex: root.colorIndexFor(monitorRow.monitorName)
+
+    x: Style.space(4)
+    width: parent.width - Style.space(8)
+    spacing: Style.space(4)
+    enabled: root.values.colorSecondaryMonitor
+    opacity: enabled ? 1 : root.disabledOpacity
+
+    Text {
+      textFormat: Text.PlainText
+      width: parent.width
+      leftPadding: Style.space(6)
+      text: monitorRow.monitorName + (monitorRow.description !== "" ? "  \u00b7  " + monitorRow.description : "")
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      elide: Text.ElideRight
+    }
+
+    Flow {
+      width: parent.width
+      spacing: Style.space(6)
+
+      Repeater {
+        model: monitorRow.options
+
+        Swatch {
+          required property var modelData
+          required property int index
+          row: monitorRow
+          option: modelData
+          optionIndex: index
+        }
+      }
+    }
+  }
+
+  // A theme color dot, or the labeled "Theme" chip for the default
   component Swatch: BorderSurface {
     id: swatch
 
+    property var row: null
     property var option: ({})
     property int optionIndex: 0
-    readonly property bool chosen: root.colorIndex === swatch.optionIndex
-    readonly property bool hot: root.cursorAt("secondaryMonitorColor", swatch.optionIndex)
+    readonly property bool chosen: swatch.row !== null && swatch.row.chosenIndex === swatch.optionIndex
+    readonly property bool hot: swatch.row !== null && root.cursorAt(swatch.row.section, swatch.optionIndex)
     readonly property bool labeled: String(swatch.option.label || "") !== ""
 
     implicitHeight: Style.space(26)
@@ -1224,8 +1588,8 @@ Panel {
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
-      onEntered: root.setCursor("secondaryMonitorColor", swatch.optionIndex)
-      onClicked: root.chooseColor(swatch.optionIndex)
+      onEntered: if (swatch.row) root.setCursor(swatch.row.section, swatch.optionIndex)
+      onClicked: if (swatch.row) root.chooseMonitorColor(swatch.row.monitorName, swatch.optionIndex)
     }
 
     PanelToolTip {

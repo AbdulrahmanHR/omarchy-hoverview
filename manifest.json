@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "io.github.abdulrahmanhr.hoverview",
   "name": "Hoverview",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "Abdulrahman Rahmouni",
   "license": "MIT",
-  "description": "Per-monitor workspace numbers with layout shapes that show a live, to-scale layout of each workspace on hover, with the shown tab of every group, a window list, and full-screen peek.",
+  "description": "Per-monitor workspace numbers with layout shapes that show a live, to-scale layout of each workspace on hover, with the shown tab of every group, a window list, full-screen peek, a keyboard overview with its own editable shortcut, and a color per monitor.",
   "kinds": [
     "bar-widget"
   ],
@@ -31,6 +31,8 @@
       "cycleLayoutOnClick": true,
       "colorSecondaryMonitor": true,
       "secondaryMonitorColor": "",
+      "monitorColors": "",
+      "overviewShortcut": "SUPER + ALT + grave",
       "preview": true,
       "hoverDelayMs": 220,
       "previewWidth": 420,
@@ -88,14 +90,28 @@
         "type": "boolean",
         "label": "Color other monitors",
         "defaultValue": true,
-        "description": "Mark the shown workspace on a non-primary monitor's bar in this color instead of the accent."
+        "description": "Master switch: mark the shown workspace on a non-primary monitor's bar in that monitor's color instead of the accent."
       },
       {
         "key": "secondaryMonitorColor",
         "type": "string",
-        "label": "Other monitor color",
+        "label": "Other monitor color (all)",
         "defaultValue": "",
-        "description": "Hex color (#RRGGBB or #AARRGGBB) for workspaces on other monitors. Leave empty to derive it from the theme (magenta)."
+        "description": "Hex color (#RRGGBB or #AARRGGBB) for non-primary monitors without their own entry in monitorColors. Leave empty for a distinct theme color per monitor."
+      },
+      {
+        "key": "monitorColors",
+        "type": "string",
+        "label": "Monitor colors",
+        "defaultValue": "",
+        "description": "JSON object in a string mapping monitor name to #RRGGBB or #AARRGGBB, e.g. {\"DP-2\":\"#89b4fa\"}. Easier to set in the settings panel (right-click a workspace number)."
+      },
+      {
+        "key": "overviewShortcut",
+        "type": "string",
+        "label": "Overview shortcut",
+        "defaultValue": "SUPER + ALT + grave",
+        "description": "Hyprland key combination that toggles the keyboard overview, e.g. SUPER + ALT + grave. Empty turns it off. Easier to set in the settings panel."
       },
       {
         "key": "preview",

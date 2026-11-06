@@ -12,6 +12,13 @@ BarWidget {
   moduleName: "io.github.abdulrahmanhr.hoverview"
 
   property int hoveredWorkspaceId: -1
+  // Opened from the hotkey instead of by hovering. The card then lives in a
+  // KeyboardPanel (a layer-shell window that can take keyboard focus) rather
+  // than the PopupCard, which is an xdg-popup and never receives keys.
+  property bool keyboardMode: false
+  // Highlighted row of the window list in keyboard mode; -1 means the
+  // workspace itself is selected.
+  property int selectedRow: -1
   property Item activeAnchorItem: null
   property bool isHoveringButton: false
   property int originalWorkspaceId: -1
@@ -77,6 +84,11 @@ BarWidget {
     var c = root.settingString("secondaryMonitorColor", "")
     return /^#([0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$/.test(c) ? c : ""
   }
+  // Hyprland bind syntax, "" for none. Registered at run time, see "Overview shortcut".
+  readonly property string overviewShortcut: root.settingString("overviewShortcut", "SUPER + ALT + grave")
+  // Per-monitor colors: monitor name -> hex. Stored as a JSON string (an object
+  // would also be read), since the settings schema only knows scalar types.
+  readonly property var monitorColors: root.parseColorMap(root.settingValue("monitorColors"))
   readonly property bool previewEnabled: root.settingBool("preview", true)
   readonly property int hoverDelayMs: root.settingInt("hoverDelayMs", 220, 0, 2000)
   readonly property int previewWidthSetting: root.settingInt("previewWidth", 420, 240, 800)
@@ -440,6 +452,7 @@ BarWidget {
   Component.onCompleted: {
     root.refreshClients()
     root.refreshModes()
+    bindTimer.restart()
   }
 
   // root.bar may already be torn down here, so revert a peek directly
@@ -454,6 +467,8 @@ BarWidget {
     function onRawEvent(event) {
       root.wsRevision++
       var name = event ? String(event.name) : ""
+      if (name === "custom" && String(event.data) === root.overviewEvent) root.overviewRequested()
+      if (name === "configreloaded") bindTimer.restart()
       // Always refresh: occupancy is read from the live client list, since
       // workspace.toplevels can miss windows (e.g. after a shell restart)
       if (root.clientEvents.indexOf(name) !== -1) {
@@ -515,7 +530,11 @@ BarWidget {
   }
 
   onDisplayedWorkspaceIdsChanged: if (root.alwaysShowLayoutShapes) root.queueModeReads()
-  onHoveredWorkspaceIdChanged: root.queueModeReads()
+  onHoveredWorkspaceIdChanged: {
+    root.queueModeReads()
+    // A keyboard row selection belongs to the workspace it was made on
+    root.selectedRow = -1
+  }
 
   property FileView themeColorsFile: FileView {
     id: themeColorsFile
@@ -541,15 +560,70 @@ BarWidget {
     return match ? match[1] : fallback
   }
 
-  readonly property color secondScreenColor: {
-    if (root.secondaryMonitorColor) return root.secondaryMonitorColor
-    var _rev = root.wsRevision
-    var c = root.getThemeColor("magenta", "")
-    if (!c) c = root.getThemeColor("purple", "")
-    if (!c) c = root.getThemeColor("orange", "")
-    if (!c) c = root.getThemeColor("yellow", "")
-    return c ? c : "#b587a0"
+  function parseColorMap(value) {
+    var obj = value
+    if (typeof value === "string") {
+      try { obj = JSON.parse(value) } catch (e) { obj = null }
+    }
+    var out = {}
+    if (!obj || typeof obj !== "object") return out
+    for (var name in obj) {
+      var c = String(obj[name]).trim()
+      if (/^#([0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$/.test(c)) out[name] = c
+    }
+    return out
   }
+
+  // Distinct theme colors for the non-primary monitors, in order. Magenta comes
+  // first (it falls back as it always did); colors the theme lacks or repeats
+  // are skipped.
+  function themePalette() {
+    var _rev = root.wsRevision
+    var groups = [["magenta", "purple", "orange", "yellow"], ["cyan"], ["yellow"], ["green"], ["blue"], ["orange"], ["red"]]
+    var out = []
+    var seen = {}
+    for (var i = 0; i < groups.length; i++) {
+      for (var j = 0; j < groups[i].length; j++) {
+        var c = root.getThemeColor(groups[i][j], "")
+        if (!c) continue
+        if (!seen[c.toLowerCase()]) {
+          seen[c.toLowerCase()] = true
+          out.push(c)
+        }
+        break
+      }
+    }
+    return out
+  }
+
+  // Non-primary monitors, by id
+  function otherMonitors() {
+    var out = []
+    var values = Hyprland.monitors ? Hyprland.monitors.values : []
+    for (var i = 0; i < values.length; i++) {
+      if (values[i].id > 0) out.push(values[i])
+    }
+    out.sort(function(a, b) { return a.id - b.id })
+    return out
+  }
+
+  // Its own entry, else the legacy single color, else the theme palette by order
+  function colorForMonitor(mon) {
+    if (!mon || mon.id <= 0) return Color.accent
+    var own = root.monitorColors[mon.name]
+    if (own) return own
+    if (root.secondaryMonitorColor) return root.secondaryMonitorColor
+    var palette = root.themePalette()
+    if (palette.length === 0) return "#b587a0"
+    var others = root.otherMonitors()
+    var at = 0
+    for (var i = 0; i < others.length; i++) {
+      if (others[i].name === mon.name) { at = i; break }
+    }
+    return palette[at % palette.length]
+  }
+
+  readonly property color secondScreenColor: root.colorForMonitor(root.monitor)
 
   // This bar's monitor has focus, so Super + number acts on it
   readonly property bool monitorFocused: root.monitor !== null && Hyprland.focusedMonitor !== null
@@ -560,16 +634,146 @@ BarWidget {
   readonly property bool onSecondScreen: root.colorSecondaryMonitor && root.monitor !== null && root.monitor.id > 0
   readonly property color barAccent: root.onSecondScreen ? root.secondScreenColor : Color.accent
 
-  function isSecondScreenWorkspace(ws) {
-    if (!ws) return root.monitor !== null && root.monitor.id > 0
-    if (ws.monitor) {
-      if (ws.monitor.id !== undefined && ws.monitor.id !== null && ws.monitor.id > 0) return true
+  // The monitor a workspace lives on (this bar's when there is no workspace)
+  function workspaceMonitor(ws) {
+    if (!ws) return root.monitor
+    if (ws.monitor) return ws.monitor
+    if (ws.lastIpcObject && ws.lastIpcObject.monitorID !== undefined) {
+      var values = Hyprland.monitors ? Hyprland.monitors.values : []
+      for (var i = 0; i < values.length; i++) {
+        if (values[i].id === ws.lastIpcObject.monitorID) return values[i]
+      }
     }
-    if (ws.lastIpcObject) {
-      if (ws.lastIpcObject.monitorID !== undefined && ws.lastIpcObject.monitorID > 0) return true
-    }
-    return false
+    return null
   }
+
+  // ------------------------------------------------------ overview shortcut
+
+  // Hoverview owns its hotkey: it registers a Hyprland bind at run time that
+  // fires a custom event, and every bar instance hears the event; only the one
+  // on the focused monitor opens (or closes) its overview. The bind lives in
+  // the Lua global __hoverview_binds, keyed by combo; stale combos are switched
+  // off with set_enabled(false), never hl.unbind'ed, so user binds are safe.
+  readonly property string overviewEvent: "hoverview overview"
+  property string bindError: ""
+  property bool bindBusy: false
+  property bool bindPending: false
+  property string bindLuaText: ""
+  property int bindExit: 0
+
+  // One bar per monitor means one instance per monitor; only the one on the
+  // lowest-id monitor registers, so the eval isn't repeated per bar. The eval
+  // is idempotent, so a changeover on hotplug is harmless.
+  readonly property bool bindLeader: {
+    if (root.monitor === null) return false
+    var values = Hyprland.monitors ? Hyprland.monitors.values : []
+    for (var i = 0; i < values.length; i++) {
+      if (values[i].id < root.monitor.id) return false
+    }
+    return true
+  }
+
+  // The combo may only hold letters, digits, _ : + and spaces, which cannot
+  // break out of the Lua string it lands in.
+  readonly property bool shortcutValid: /^[A-Za-z0-9_:+ ]+$/.test(root.overviewShortcut)
+  readonly property string shortcutError: root.overviewShortcut !== "" && !root.shortcutValid
+    ? "Overview shortcut has invalid characters" : ""
+
+  onBindLeaderChanged: bindTimer.restart()
+  onOverviewShortcutChanged: bindTimer.restart()
+
+  Timer {
+    id: bindTimer
+    interval: 300
+    onTriggered: root.registerBinds()
+  }
+
+  function bindLua(combo) {
+    var lines = ["__hoverview_binds = __hoverview_binds or {}", "local want = {}"]
+    if (combo !== "") lines.push('want["' + combo + '"] = true')
+    lines.push("for id, b in pairs(__hoverview_binds) do if not want[id] then b:set_enabled(false) end end")
+    if (combo !== "") {
+      lines.push('if __hoverview_binds["' + combo + '"] then __hoverview_binds["' + combo + '"]:set_enabled(true) else '
+        + '__hoverview_binds["' + combo + '"] = hl.bind("' + combo + '", hl.dsp.event("' + root.overviewEvent + '"), { description = "Workspace overview (Hoverview)" }) end')
+    }
+    return lines.join("\n")
+  }
+
+  function registerBinds() {
+    if (!root.bindLeader) return
+    if (root.bindBusy) {
+      root.bindPending = true
+      return
+    }
+    var combo = root.overviewShortcut
+    if (combo !== "" && !root.shortcutValid) {
+      console.warn("Hoverview: refusing overview shortcut " + JSON.stringify(combo))
+      return
+    }
+    root.bindLuaText = root.bindLua(combo)
+    root.bindBusy = true
+    bindCheck.running = true
+  }
+
+  function bindFinished(error) {
+    root.bindError = error
+    if (error !== "") console.warn("Hoverview: " + error)
+    root.bindBusy = false
+    if (root.bindPending) {
+      root.bindPending = false
+      Qt.callLater(root.registerBinds)
+    }
+  }
+
+  // An eval clears Hyprland's list of config errors, so never run one over a
+  // config that has some.
+  Process {
+    id: bindCheck
+    command: ["hyprctl", "configerrors"]
+    stdout: StdioCollector {
+      id: bindCheckOut
+      waitForEnd: true
+    }
+    onExited: function(exitCode) { root.bindExit = exitCode }
+    onRunningChanged: {
+      if (running) return
+      Qt.callLater(function() {
+        if (root.bindExit !== 0) root.bindFinished("hyprctl configerrors failed")
+        else if (String(bindCheckOut.text).trim() !== "") root.bindFinished("Hyprland config has errors; overview shortcut not registered")
+        else {
+          bindEval.command = ["hyprctl", "eval", root.bindLuaText]
+          bindEval.running = true
+        }
+      })
+    }
+  }
+
+  Process {
+    id: bindEval
+    property int exitCode: 0
+    onExited: function(exitCode) { bindEval.exitCode = exitCode }
+    onRunningChanged: {
+      if (!running) Qt.callLater(function() {
+        root.bindFinished(bindEval.exitCode === 0 ? "" : "Could not register the overview shortcut")
+      })
+    }
+  }
+
+  // The bind fired. Only the focused monitor's bar answers.
+  function overviewRequested() {
+    if (settingsPanel.recording) return
+    if (root.monitorFocused) {
+      if (root.opened) root.close()
+      else root.open()
+    } else if (root.keyboardMode) {
+      root.close()
+    }
+  }
+
+  // Shape contract for shell.summon/hide/toggle routing: Bar.findPanelWidget
+  // needs open(), close() and `opened` on the widget root. Opened counts the
+  // hover card too, so the hotkey closes a card the mouse opened.
+  readonly property bool opened: previewPopup.open || root.keyboardMode
 
   function close() {
     openTimer.stop()
@@ -577,8 +781,67 @@ BarWidget {
     peekTimer.stop()
     unpeekTimer.stop()
     if (root.isPeeking) root.revertPeek()
-    previewPopup.open = false
+    root.hideCard()
     root.hoveredWorkspaceId = -1
+  }
+
+  // Hides whichever card is up without touching the hover state
+  function hideCard() {
+    previewPopup.open = false
+    root.keyboardMode = false
+  }
+
+  // Hotkey entry: the card for the workspace this monitor shows, with keyboard
+  // focus. Works whether or not the hover preview is enabled, since the hotkey
+  // is an explicit request.
+  function open() {
+    var ids = root.displayedWorkspaceIds
+    if (ids.length === 0) return
+    var start = root.shownWorkspaceId
+    if (ids.indexOf(start) === -1) start = ids[0]
+    if (settingsPanel.opened) settingsPanel.close()
+    root.close()
+    root.keyboardSelect(start)
+    root.keyboardMode = true
+  }
+
+  // Points the card at a workspace's number, as hovering it does
+  function keyboardSelect(id) {
+    var index = root.displayedWorkspaceIds.indexOf(id)
+    if (index === -1) return
+    root.refreshClients()
+    root.activeAnchorItem = wsRepeater.itemAt(index) || root
+    root.hoveredWorkspaceId = id
+  }
+
+  // Holds at either end, like the wheel
+  function keyboardMoveWorkspace(delta) {
+    var ids = root.displayedWorkspaceIds
+    var index = ids.indexOf(root.hoveredWorkspaceId)
+    if (index === -1) return
+    var target = ids[Util.clamp(index + delta, 0, ids.length - 1)]
+    if (target !== ids[index]) root.keyboardSelect(target)
+  }
+
+  function keyboardMoveRow(delta) {
+    if (!root.showWindowList || root.displayedToplevels.length === 0) return
+    root.selectedRow = Util.clamp(root.selectedRow + delta, -1, root.displayedToplevels.length - 1)
+  }
+
+  // A digit names a slot of this monitor's block, as Super + number does.
+  // Workspaces with no number on the bar can't be pointed at, so are skipped.
+  function keyboardJump(digit) {
+    var slot = digit === 0 ? root.slots : digit
+    root.keyboardSelect(root.block * root.slots + slot)
+  }
+
+  function keyboardActivate() {
+    var row = root.selectedRow
+    if (row >= 0 && row < root.displayedToplevels.length) {
+      root.commitAndFocusWindow(root.displayedToplevels[row], root.hoveredWorkspaceId)
+    } else {
+      root.commitAndFocusWorkspace(root.hoveredWorkspaceId)
+    }
   }
 
   function formatAddress(target) {
@@ -643,7 +906,7 @@ BarWidget {
     var targetWs = (wsId !== undefined && wsId !== -1) ? wsId : root.hoveredWorkspaceId
 
     root.dropPeek()
-    previewPopup.open = false
+    root.hideCard()
     root.hoveredWorkspaceId = -1
 
     if (typeof target === "object" && target && target.wayland && typeof target.wayland.activate === "function") {
@@ -662,7 +925,7 @@ BarWidget {
   function commitAndFocusWorkspace(wsId) {
     var targetWs = (wsId !== undefined && wsId !== -1) ? wsId : root.hoveredWorkspaceId
     root.dropPeek()
-    previewPopup.open = false
+    root.hideCard()
     root.hoveredWorkspaceId = -1
     if (targetWs !== undefined && targetWs !== -1) {
       focusWorkspace(targetWs)
@@ -711,7 +974,7 @@ BarWidget {
     property int targetWsId: -1
 
     onTriggered: {
-      if (root.previewEnabled && !settingsPanel.opened && targetWsId !== -1 && targetButton) {
+      if (root.previewEnabled && !root.keyboardMode && !settingsPanel.opened && targetWsId !== -1 && targetButton) {
         root.activeAnchorItem = targetButton
         root.hoveredWorkspaceId = targetWsId
         previewPopup.open = true
@@ -725,7 +988,8 @@ BarWidget {
     repeat: false
 
     onTriggered: {
-      if (!previewPopup.containsMouse && !root.isHoveringButton) {
+      // A keyboard-opened card stays until it is dismissed
+      if (!root.keyboardMode && !previewPopup.containsMouse && !root.isHoveringButton) {
         root.close()
       }
     }
@@ -788,7 +1052,8 @@ BarWidget {
 
     root.refreshClients()
 
-    if (previewPopup.open) {
+    // A card opened from the keyboard just follows the mouse
+    if (root.opened) {
       root.activeAnchorItem = btn
       root.hoveredWorkspaceId = wsId
     } else {
@@ -825,7 +1090,7 @@ BarWidget {
   readonly property int remainingCount: Math.max(0, activeToplevels.length - root.maxListedWindows)
   readonly property bool isActiveFocused: Hyprland.focusedWorkspace !== null && Hyprland.focusedWorkspace.id === root.hoveredWorkspaceId
 
-  readonly property color currentAccentColor: root.colorSecondaryMonitor && root.isSecondScreenWorkspace(root.activeWs) ? root.secondScreenColor : Color.accent
+  readonly property color currentAccentColor: root.colorSecondaryMonitor ? root.colorForMonitor(root.workspaceMonitor(root.activeWs)) : Color.accent
 
   // Only the shown tab of each group for the visual screen preview
   readonly property var visibleToplevels: {
@@ -890,7 +1155,7 @@ BarWidget {
 
   // Whole-monitor capture for the focused/peeked workspace; window tiles
   // capture only when it is off, so a hidden view never keeps a capture open
-  readonly property bool monitorCaptureActive: root.livePreview && previewPopup.open && (root.isActiveFocused || root.isPeeking) && root.activeScreen !== null
+  readonly property bool monitorCaptureActive: root.livePreview && root.opened && (root.isActiveFocused || root.isPeeking) && root.activeScreen !== null
   readonly property bool tileCaptureActive: root.livePreview && !root.monitorCaptureActive
 
   // Preview canvas size (420px by default)
@@ -905,7 +1170,7 @@ BarWidget {
   // under the workspace whose card or settings are open, not mid-widget.
   readonly property Item openPanelIndicatorItem: settingsPanel.opened && root.settingsAnchorButton
     ? root.settingsAnchorButton
-    : (previewPopup.open && root.activeAnchorItem ? root.activeAnchorItem : null)
+    : (root.opened && root.activeAnchorItem ? root.activeAnchorItem : null)
 
   readonly property real trailingGap: root.vertical ? 0 : Style.spaceReal(1.5)
 
@@ -921,6 +1186,7 @@ BarWidget {
     rowSpacing: root.vertical ? Style.space(2) : 0
 
     Repeater {
+      id: wsRepeater
       model: root.displayedWorkspaceIds
 
       WidgetButton {
@@ -1001,6 +1267,8 @@ BarWidget {
           }
           btn.bindLabelOffset()
           if (btn.modelData === root.settingsWorkspaceId) root.settingsAnchorButton = btn
+          // Buttons are rebuilt when the shown set changes; the card keeps hanging from its own
+          if (root.keyboardMode && btn.modelData === root.hoveredWorkspaceId) root.activeAnchorItem = btn
         }
 
         // Accent pill behind the shown workspace's number, or its layout
@@ -1092,6 +1360,39 @@ BarWidget {
     id: settingsPanel
     bar: root.bar
     anchorItem: root.settingsAnchorButton || root
+    bindError: root.bindError !== "" ? root.bindError : root.shortcutError
+  }
+
+  // Keyboard overview. Same card content as the PopupCard below (popupColumn
+  // moves in here while keyboardMode is on). A KeyboardPanel is a layer-shell
+  // window that takes keyboard focus on open and gives it back on close, which
+  // the hover PopupCard (an xdg-popup) can't, and which a hover must never do.
+  // Clicking outside it closes it through root.close().
+  KeyboardPanel {
+    id: keyboardPanel
+    anchorItem: root.activeAnchorItem || root
+    owner: root
+    bar: root.bar
+    open: root.keyboardMode
+    focusTarget: keyCatcher
+    padding: Style.space(12)
+    contentWidth: keyboardPanel.fittedContentWidth(root.previewWidth + keyboardPanel.padding * 2 + Border.left(keyboardPanel.borderSpec) + Border.right(keyboardPanel.borderSpec))
+    contentHeight: keyboardPanel.fittedContentHeight(popupColumn.implicitHeight)
+
+    PanelKeyCatcher {
+      id: keyCatcher
+      anchors.fill: parent
+      onMoveRequested: function(dx, dy) {
+        if (dx !== 0) root.keyboardMoveWorkspace(dx)
+        else root.keyboardMoveRow(dy)
+      }
+      onActivateRequested: root.keyboardActivate()
+      onCloseRequested: root.close()
+      onTextKey: function(t, modifiers) {
+        var chord = Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier
+        if (!(modifiers & chord) && t >= "0" && t <= "9") root.keyboardJump(parseInt(t, 10))
+      }
+    }
   }
 
   // Hover preview popup card
@@ -1106,8 +1407,16 @@ BarWidget {
     contentWidth: previewPopup.fittedContentWidth(root.previewWidth + previewPopup.padding * 2 + Border.left(previewPopup.borderSpec) + Border.right(previewPopup.borderSpec))
     contentHeight: previewPopup.fittedContentHeight(popupColumn.implicitHeight)
 
+    // Where the card content sits while the PopupCard shows it
+    Item {
+      id: previewSlot
+      anchors.fill: parent
+    }
+
     Column {
       id: popupColumn
+      // One copy of the content, moved into the KeyboardPanel in keyboard mode
+      parent: root.keyboardMode ? keyCatcher : previewSlot
       width: root.previewWidth
       spacing: Style.space(10)
 
@@ -1178,7 +1487,7 @@ BarWidget {
           onHoveredChanged: {
             if (hovered) {
               unpeekTimer.stop()
-              if (root.peekOnHover) peekTimer.restart()
+              if (root.peekOnHover && !root.keyboardMode) peekTimer.restart()
             } else {
               peekTimer.stop()
               if (!previewPopup.containsMouse) {
@@ -1227,11 +1536,13 @@ BarWidget {
 
             readonly property real localX: rawX - root.monX
             readonly property real localY: rawY - root.monY
+            readonly property real minW: Style.space(36)
+            readonly property real minH: Style.space(28)
 
-            x: Math.max(0, Math.min(previewScreen.width - width, localX * root.scaleX))
-            y: Math.max(0, Math.min(previewScreen.height - height, localY * root.scaleY))
-            width: Math.max(Style.space(36), Math.min(previewScreen.width - x, rawW * root.scaleX))
-            height: Math.max(Style.space(28), Math.min(previewScreen.height - y, rawH * root.scaleY))
+            x: Math.max(0, Math.min(previewScreen.width - minW, localX * root.scaleX))
+            y: Math.max(0, Math.min(previewScreen.height - minH, localY * root.scaleY))
+            width: Math.max(minW, Math.min(previewScreen.width - x, rawW * root.scaleX))
+            height: Math.max(minH, Math.min(previewScreen.height - y, rawH * root.scaleY))
 
             Rectangle {
               id: tile
@@ -1397,6 +1708,7 @@ BarWidget {
           Rectangle {
             id: listItem
             required property var modelData
+            required property int index
             width: parent.width
             height: Style.space(34)
             radius: Style.space(5)
@@ -1406,7 +1718,11 @@ BarWidget {
             readonly property string winTitle: modelData.title || itemIpc.title || appClass
             readonly property bool isLastFocused: root.highlightLastFocused ? modelData === root.lastFocusedToplevel : modelData.activated === true
 
-            color: rowMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.08) : "transparent"
+            readonly property bool keySelected: root.keyboardMode && index === root.selectedRow
+
+            color: keySelected ? Qt.rgba(1, 1, 1, 0.12) : (rowMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.08) : "transparent")
+            border.width: keySelected ? 1 : 0
+            border.color: root.currentAccentColor
 
             Rectangle {
               anchors.left: parent.left
@@ -1513,6 +1829,18 @@ BarWidget {
           horizontalAlignment: Text.AlignHCenter
           topPadding: Style.space(4)
           bottomPadding: Style.space(4)
+        }
+
+        Text {
+          visible: root.keyboardMode
+          width: parent.width
+          text: "\u2190\u2192 workspace   \u2191\u2193 window   1-0 jump   Enter switch   Esc close"
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Style.font.caption * 0.85
+          color: Color.muted
+          horizontalAlignment: Text.AlignHCenter
+          elide: Text.ElideRight
+          topPadding: Style.space(2)
         }
       }
     }
